@@ -10,14 +10,15 @@ PWA local para gestionar animales, eventos reproductivos, ciclos, partos y alert
 
 ## Abrir o instalar en Android
 
-1. Conecte el teléfono y el PC a la misma red.
-2. Ejecute `pnpm dev --host 0.0.0.0` y abra desde Chrome Android la dirección de red indicada por la terminal.
-3. En Chrome, use **Instalar aplicación** o **Añadir a pantalla principal**.
-4. Abra una vez con conexión para guardar el shell de la app. Luego puede trabajar offline: los datos están en IndexedDB de ese dispositivo.
+1. Publique el build de producción detrás de una URL HTTPS confiable y accesible desde el teléfono. No active integraciones externas; para esta prueba basta el servidor HTTPS de QA autorizado por la organización.
+2. Abra esa URL en Chrome Android y use **Instalar aplicación** o **Añadir a pantalla principal**.
+3. Abra una vez con conexión para guardar el shell de la app. Luego puede trabajar offline: los datos están en IndexedDB de ese dispositivo.
+
+`pnpm dev --host 0.0.0.0` sirve para desarrollo en red, pero no certifica instalación Android: el navegador exige HTTPS confiable para registrar el service worker fuera de `localhost`.
 
 ### Prueba de instalación y reapertura offline
 
-1. En Chrome Android, abra la aplicación y compruebe que Chrome muestra **Instalar aplicación**.
+1. En Chrome Android, abra la URL HTTPS de QA y compruebe que Chrome muestra **Instalar aplicación**.
 2. Instálela y ábrala desde el icono “RB SmartFarm”. Confirme que abre en ventana independiente y conserva A0001–A0004.
 3. Con la app abierta una vez, active el modo avión o desactive Wi‑Fi/datos móviles.
 4. Cierre por completo y vuelva a abrir la PWA desde el icono. Deben aparecer la interfaz y los datos locales.
