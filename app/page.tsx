@@ -113,11 +113,16 @@ const ageInMonths = (birthDate: string) => {
       (today.getDate() < birth.getDate() ? 1 : 0),
   );
 };
-const minimumBreedingAge = (animal: Animal) =>
-  animal.species === 'Búfalo' ? 24 : 18;
-const inventoryCategory = (animal: Animal) => {
+const minimumBreedingAge = (
+  _animal: Animal,
+  settings: Settings = defaultSettings,
+) => settings.minimumBreedingAgeMonths;
+const inventoryCategory = (
+  animal: Animal,
+  settings: Settings = defaultSettings,
+) => {
   const months = ageInMonths(animal.birthDate);
-  const minimum = minimumBreedingAge(animal);
+  const minimum = minimumBreedingAge(animal, settings);
   if (months < 12)
     return { label: 'Cría', tone: 'neutral', group: 'cría' as const };
   if (months < minimum) {
@@ -141,7 +146,8 @@ const inventoryCategory = (animal: Animal) => {
       }
     : { label: 'Reproductor', tone: 'good', group: 'reproductor' as const };
 };
-const reproductiveCategory = (animal: Animal) => inventoryCategory(animal);
+const reproductiveCategory = (animal: Animal, settings?: Settings) =>
+  inventoryCategory(animal, settings);
 const ageLabel = (animal: Animal) => {
   const months = ageInMonths(animal.birthDate);
   return `${Math.floor(months / 12)} año(s) y ${months % 12} mes(es)`;
@@ -157,6 +163,53 @@ const nextCalfDisplayId = (animals: Animal[], birthDate: string) => {
     candidate = `${prefix}${String(serial).padStart(3, '0')}`;
   }
   return candidate;
+};
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
+const restoreDataFrom = (source: unknown): FarmData | undefined => {
+  if (!isRecord(source)) return undefined;
+  const candidate = isRecord(source.data) ? source.data : source;
+  if (
+    !Array.isArray(candidate.animals) ||
+    !Array.isArray(candidate.events) ||
+    !Array.isArray(candidate.births) ||
+    !Array.isArray(candidate.audits) ||
+    !isRecord(candidate.settings)
+  )
+    return undefined;
+  const animals = candidate.animals as Animal[];
+  if (
+    animals.some(
+      (animal) =>
+        !isRecord(animal) ||
+        typeof animal.id !== 'string' ||
+        typeof animal.displayId !== 'string',
+    )
+  )
+    return undefined;
+  const duplicateAnimal =
+    new Set(animals.map((animal) => animal.id)).size !== animals.length ||
+    new Set(animals.map((animal) => animal.displayId.trim().toLowerCase()))
+      .size !== animals.length;
+  if (duplicateAnimal) return undefined;
+  const ids = new Set(animals.map((animal) => animal.id));
+  if (
+    (candidate.events as ReproductiveEvent[]).some(
+      (event) => !ids.has(event.animalId),
+    ) ||
+    (candidate.births as Birth[]).some((birth) => !ids.has(birth.motherId))
+  )
+    return undefined;
+  return {
+    animals,
+    events: candidate.events as ReproductiveEvent[],
+    births: candidate.births as Birth[],
+    audits: candidate.audits as AuditEntry[],
+    settings: {
+      ...defaultSettings,
+      ...(candidate.settings as Partial<Settings>),
+    },
+  };
 };
 
 export default function Home() {
@@ -184,6 +237,43 @@ export default function Home() {
     setData(next);
     await repo.save(next);
   };
+  const exportBackup = () => {
+    const exportedAt = new Date().toISOString();
+    const backup = {
+      format: 'RB SmartFarm respaldo local',
+      version: 1,
+      exportedAt,
+      data,
+    };
+    const file = new Blob([JSON.stringify(backup, null, 2)], {
+      type: 'application/json',
+    });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(file);
+    link.download = `rb-smartfarm-respaldo-${exportedAt.slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    setNotice('Respaldo descargado. Guárdalo en un lugar seguro.');
+  };
+  const restoreBackup = async (file: File) => {
+    try {
+      const restored = restoreDataFrom(JSON.parse(await file.text()));
+      if (!restored) {
+        setNotice('El archivo no es un respaldo válido de RB SmartFarm.');
+        return;
+      }
+      if (
+        !confirm(
+          `Se reemplazarán los datos actuales por ${restored.animals.length} animales, ${restored.events.length} eventos y ${restored.births.length} partos del respaldo. ¿Deseas continuar?`,
+        )
+      )
+        return;
+      await persist(restored);
+      setNotice('Respaldo restaurado correctamente en este dispositivo.');
+    } catch {
+      setNotice('No fue posible leer este archivo de respaldo.');
+    }
+  };
   const audit = (
     entity: 'Animal' | 'Evento' | 'Parto' | 'Configuración',
     entityId: string,
@@ -195,7 +285,7 @@ export default function Home() {
     entityId,
     action,
     at: new Date().toISOString(),
-    localUser: 'Usuario local',
+    localUser: data.settings.localUser.trim() || 'Usuario local',
     reason,
   });
   const addAnimal = async (form: HTMLFormElement) => {
@@ -251,7 +341,16 @@ export default function Home() {
       validationIssues: [],
       createdAt: new Date().toISOString(),
     };
-    draft.validationIssues = validateEvent(draft, animal);
+    draft.validationIssues = validateEvent(draft, animal, {
+      previousEvents: data.events.filter(
+        (event) => event.animalId === animalId,
+      ),
+      hasOpenReview: cycles.some(
+        (cycle) =>
+          cycle.animalId === animalId && cycle.status === 'Requiere revisión',
+      ),
+      today: new Date().toISOString().slice(0, 10),
+    });
     draft.valid = draft.validationIssues.length === 0;
     await persist({
       ...data,
@@ -277,11 +376,15 @@ export default function Home() {
       .at(-1);
     const occurredAt = formValue(values, 'occurredAt');
     const type = formValue(values, 'type') as Birth['type'];
+    const sex = (formValue(values, 'sex') || undefined) as Birth['sex'];
+    const condition = (formValue(values, 'condition') ||
+      undefined) as Birth['condition'];
     const issues = validateBirth(
-      { motherId, occurredAt, type },
+      { motherId, occurredAt, type, sex, condition },
       mother,
       relevant,
       data.settings,
+      new Date().toISOString().slice(0, 10),
     );
     const birthId = uid();
     const shouldCreateCalf =
@@ -294,7 +397,7 @@ export default function Home() {
           displayId: nextCalfDisplayId(data.animals, occurredAt.slice(0, 10)),
           species: mother.species,
           breed: mother.breed,
-          sex: (formValue(values, 'sex') || 'Hembra') as Animal['sex'],
+          sex: sex as Animal['sex'],
           birthDate: occurredAt.slice(0, 10),
           status: 'Activo' as const,
           lot: mother.lot,
@@ -310,9 +413,8 @@ export default function Home() {
       motherId,
       occurredAt,
       type,
-      sex: (formValue(values, 'sex') || undefined) as Birth['sex'],
-      condition: (formValue(values, 'condition') ||
-        undefined) as Birth['condition'],
+      sex,
+      condition,
       assistance: formValue(values, 'assistance') || undefined,
       valid: issues.length === 0,
       needsReview: issues.length > 0,
@@ -477,6 +579,9 @@ export default function Home() {
     const vals = new FormData(form);
     const settings = {
       ...data.settings,
+      farmName: formValue(vals, 'farmName').trim() || defaultSettings.farmName,
+      localUser:
+        formValue(vals, 'localUser').trim() || defaultSettings.localUser,
       ...Object.fromEntries(
         numericSettingKeys.map((key) => [key, Number(vals.get(key))]),
       ),
@@ -623,7 +728,7 @@ export default function Home() {
             <Menu />
           </button>
           <div>
-            <p className="eyebrow">Finca local</p>
+            <p className="eyebrow">{data.settings.farmName}</p>
             <h1>{view}</h1>
           </div>
           <div className="top-actions">
@@ -656,6 +761,7 @@ export default function Home() {
                 births={data.births}
                 upcoming={upcoming}
                 review={reviewCycles}
+                settings={data.settings}
                 onNavigate={setView}
                 onOpenAnimals={(filter) => {
                   setAnimalFilter(filter);
@@ -670,6 +776,7 @@ export default function Home() {
                 events={data.events}
                 births={data.births}
                 audits={data.audits}
+                settings={data.settings}
                 selectedFilter={animalFilter}
                 onFilterChange={setAnimalFilter}
                 onAdd={addAnimal}
@@ -704,6 +811,8 @@ export default function Home() {
                 settings={data.settings}
                 onSave={saveSettings}
                 onSaveRemovalCode={saveRemovalCode}
+                onExportBackup={exportBackup}
+                onRestoreBackup={restoreBackup}
               />
             )}
           </div>
@@ -719,6 +828,7 @@ function Dashboard({
   births,
   upcoming,
   review,
+  settings,
   onNavigate,
   onOpenAnimals,
 }: {
@@ -727,6 +837,7 @@ function Dashboard({
   births: Birth[];
   upcoming: Cycle[];
   review: Cycle[];
+  settings: Settings;
   onNavigate: (v: View) => void;
   onOpenAnimals: (filter: AnimalListFilter) => void;
 }) {
@@ -739,12 +850,14 @@ function Dashboard({
   const inventoryCount = (
     group: ReturnType<typeof inventoryCategory>['group'],
   ) =>
-    animals.filter((animal) => inventoryCategory(animal).group === group)
-      .length;
+    animals.filter(
+      (animal) => inventoryCategory(animal, settings).group === group,
+    ).length;
   const calfCount = (sex: Animal['sex']) =>
     animals.filter(
       (animal) =>
-        inventoryCategory(animal).group === 'cría' && animal.sex === sex,
+        inventoryCategory(animal, settings).group === 'cría' &&
+        animal.sex === sex,
     ).length;
   return (
     <>
@@ -920,6 +1033,7 @@ function Animals({
   events,
   births,
   audits,
+  settings,
   selectedFilter,
   onFilterChange,
   onAdd,
@@ -931,6 +1045,7 @@ function Animals({
   events: ReproductiveEvent[];
   births: Birth[];
   audits: AuditEntry[];
+  settings: Settings;
   selectedFilter: AnimalListFilter;
   onFilterChange: (filter: AnimalListFilter) => void;
   onAdd: (form: HTMLFormElement) => void;
@@ -954,12 +1069,12 @@ function Animals({
     const cycle = cycles.filter((item) => item.animalId === animal.id).at(-1);
     return cycle
       ? { label: cycle.status, tone: statusClass(cycle.status) }
-      : reproductiveCategory(animal);
+      : reproductiveCategory(animal, settings);
   };
   const hasValidatedBirth = (animal: Animal) =>
     births.some((birth) => birth.motherId === animal.id && birth.valid);
   const matchesCategory = (animal: Animal) => {
-    const category = inventoryCategory(animal).group;
+    const category = inventoryCategory(animal, settings).group;
     switch (selectedFilter) {
       case 'parous-females':
         return animal.sex === 'Hembra' && hasValidatedBirth(animal);
@@ -1268,7 +1383,7 @@ function Animals({
             ) : (
               filteredAnimals.map((animal) => {
                 const animalState = state(animal);
-                const category = inventoryCategory(animal);
+                const category = inventoryCategory(animal, settings);
                 return (
                   <tr key={animal.id}>
                     <td>
@@ -1379,7 +1494,9 @@ function Animals({
               </div>
               <div>
                 <span>Categoría</span>
-                <strong>{inventoryCategory(technicalSheet).label}</strong>
+                <strong>
+                  {inventoryCategory(technicalSheet, settings).label}
+                </strong>
               </div>
               <div>
                 <span>Estado reproductivo</span>
@@ -1799,6 +1916,7 @@ function Events({
             'Diagnóstico',
             'Aborto',
             'Revisión posparto',
+            'Resolución de revisión',
             'Otro',
           ]}
         />
@@ -1890,6 +2008,12 @@ function Cycles({ cycles, animals }: { cycles: Cycle[]; animals: Animal[] }) {
               {cycle.reviewReasons.length > 0 && (
                 <p className="review-reason">{cycle.reviewReasons.join(' ')}</p>
               )}
+              {cycle.resolvedAt && (
+                <p>
+                  Revisión resuelta: <strong>{date(cycle.resolvedAt)}</strong>
+                  {cycle.resolutionNote && ` · ${cycle.resolutionNote}`}
+                </p>
+              )}
               <small>{cycle.eventIds.length} evento(s) vinculados</small>
             </article>
           ))}
@@ -1931,6 +2055,8 @@ function Births({
           name="motherId"
           options={mothers.map((item) => `${item.id}|${item.displayId}`)}
           encoded
+          placeholder="Selecciona la madre"
+          defaultValue=""
           required
         />
         <Input
@@ -1943,17 +2069,25 @@ function Births({
           label="Tipo de parto"
           name="type"
           options={['Normal', 'Distócico', 'Cesárea']}
+          placeholder="Selecciona el tipo"
+          defaultValue=""
           required
         />
         <Select
           label="Sexo de cría"
           name="sex"
-          options={['', 'Hembra', 'Macho']}
+          options={['Hembra', 'Macho']}
+          placeholder="Selecciona el sexo"
+          defaultValue=""
+          required
         />
         <Select
           label="Condición"
           name="condition"
-          options={['', 'Vivo', 'Muerto', 'Débil']}
+          options={['Vivo', 'Muerto', 'Débil']}
+          placeholder="Selecciona la condición"
+          defaultValue=""
+          required
         />
         <Input label="Asistencia" name="assistance" />
         <button className="primary form-submit">Registrar parto</button>
@@ -2154,10 +2288,14 @@ function Configuration({
   settings,
   onSave,
   onSaveRemovalCode,
+  onExportBackup,
+  onRestoreBackup,
 }: {
   settings: Settings;
   onSave: (form: HTMLFormElement) => void;
   onSaveRemovalCode: (form: HTMLFormElement) => void;
+  onExportBackup: () => void;
+  onRestoreBackup: (file: File) => void;
 }) {
   const labels: Record<(typeof numericSettingKeys)[number], string> = {
     bovineGestationDays: 'Gestación bovina (días)',
@@ -2183,6 +2321,18 @@ function Configuration({
           onSave(e.currentTarget);
         }}
       >
+        <Input
+          label="Nombre de la finca"
+          name="farmName"
+          required
+          defaultValue={settings.farmName}
+        />
+        <Input
+          label="Usuario local"
+          name="localUser"
+          required
+          defaultValue={settings.localUser}
+        />
         {numericSettingKeys.map((key) => (
           <Input
             key={key}
@@ -2195,6 +2345,34 @@ function Configuration({
         ))}
         <button className="primary form-submit">Guardar parámetros</button>
       </form>
+      <section className="panel backup-panel">
+        <div>
+          <p className="eyebrow">Respaldo local</p>
+          <h3>Protege los datos de la finca</h3>
+          <p>
+            Descarga una copia completa antes de cambiar de computador o hacer
+            cambios importantes. La restauración reemplaza los datos actuales
+            únicamente después de su confirmación.
+          </p>
+        </div>
+        <div className="backup-actions">
+          <button className="primary" type="button" onClick={onExportBackup}>
+            Descargar respaldo
+          </button>
+          <label className="quiet backup-restore">
+            Restaurar respaldo
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                if (file) onRestoreBackup(file);
+                event.currentTarget.value = '';
+              }}
+            />
+          </label>
+        </div>
+      </section>
       <section className="panel security-panel">
         <div>
           <p className="eyebrow">Seguridad</p>
@@ -2274,17 +2452,24 @@ function Select({
   name,
   options,
   encoded,
+  placeholder,
   ...props
 }: {
   label: string;
   name: string;
   options: string[];
   encoded?: boolean;
+  placeholder?: string;
 } & React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <label>
       {label}
       <select name={name} {...props}>
+        {placeholder && (
+          <option value="" disabled>
+            {placeholder}
+          </option>
+        )}
         {!props.required && <option value="">Sin especificar</option>}
         {options.map((item) => {
           const [value, text] = encoded ? item.split('|') : [item, item];

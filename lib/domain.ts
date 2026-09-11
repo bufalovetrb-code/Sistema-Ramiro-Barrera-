@@ -19,6 +19,7 @@ export type EventType =
   | 'Diagnóstico'
   | 'Aborto'
   | 'Revisión posparto'
+  | 'Resolución de revisión'
   | 'Otro';
 export type EventResult = 'Gestante' | 'Vacía' | 'Dudosa' | 'No evaluable' | '';
 
@@ -87,6 +88,8 @@ export interface AuditEntry {
 }
 
 export interface Settings {
+  farmName: string;
+  localUser: string;
   bovineGestationDays: number;
   buffaloGestationDays: number;
   upcomingBirthDays: number;
@@ -104,10 +107,14 @@ export interface Cycle {
   eventIds: string[];
   expectedBirthDate?: string;
   reviewReasons: string[];
+  resolvedAt?: string;
+  resolutionNote?: string;
   closedAt?: string;
 }
 
 export const defaultSettings: Settings = {
+  farmName: 'Finca local',
+  localUser: 'Usuario local',
   bovineGestationDays: 283,
   buffaloGestationDays: 310,
   upcomingBirthDays: 30,
@@ -127,9 +134,16 @@ const byTime = <T extends { occurredAt?: string; createdAt?: string }>(
     b.occurredAt ?? b.createdAt ?? '',
   );
 
+export interface EventValidationContext {
+  previousEvents?: ReproductiveEvent[];
+  hasOpenReview?: boolean;
+  today?: string;
+}
+
 export function validateEvent(
   event: ReproductiveEvent,
   animal?: Animal,
+  context: EventValidationContext = {},
 ): string[] {
   const issues: string[] = [];
   if (!event.occurredAt || !event.type)
@@ -137,24 +151,72 @@ export function validateEvent(
   if (!animal) issues.push('El animal no existe.');
   if (animal && day(event.occurredAt) < day(animal.birthDate))
     issues.push('El evento es anterior al nacimiento del animal.');
+  if (context.today && event.occurredAt.slice(0, 10) > context.today)
+    issues.push('El evento no puede registrarse en una fecha futura.');
   if (event.type === 'Diagnóstico' && !event.result)
     issues.push('Un diagnóstico requiere resultado.');
-  if (event.result === 'Gestante' && !event.serviceDate)
-    issues.push('Una gestación requiere fecha de servicio.');
+  if (event.type === 'Diagnóstico') {
+    if (!event.serviceDate)
+      issues.push('Un diagnóstico requiere la fecha del servicio previo.');
+    if (event.serviceDate && event.serviceDate > event.occurredAt.slice(0, 10))
+      issues.push('El diagnóstico no puede ser anterior al servicio.');
+    if (
+      event.serviceDate &&
+      !context.previousEvents?.some(
+        (item) =>
+          item.valid &&
+          item.type === 'Servicio' &&
+          item.occurredAt.slice(0, 10) <= event.serviceDate!,
+      )
+    )
+      issues.push('Diagnóstico sin servicio previo registrado.');
+  }
+  if (
+    event.diagnosisDate &&
+    event.serviceDate &&
+    event.diagnosisDate < event.serviceDate
+  )
+    issues.push('La fecha de diagnóstico no puede ser anterior al servicio.');
+  if (event.type === 'Resolución de revisión') {
+    if (!context.hasOpenReview)
+      issues.push('No hay un ciclo en revisión para resolver.');
+    if (!event.notes?.trim())
+      issues.push('La resolución de revisión requiere un motivo.');
+  }
+  if (context.hasOpenReview && event.type !== 'Resolución de revisión')
+    issues.push(
+      'Este ciclo requiere una resolución explícita antes de registrar otro evento.',
+    );
   return issues;
 }
 
 export function validateBirth(
-  birth: Pick<Birth, 'motherId' | 'occurredAt'> & { type?: Birth['type'] },
+  birth: Pick<Birth, 'motherId' | 'occurredAt' | 'condition' | 'sex'> & {
+    type?: Birth['type'];
+  },
   mother: Animal | undefined,
   activeCycle: Cycle | undefined,
   settings: Settings,
+  today?: string,
 ): string[] {
   const issues: string[] = [];
   if (!birth.motherId || !mother) issues.push('La madre no existe.');
+  if (mother && mother.sex !== 'Hembra')
+    issues.push('El parto solo puede registrarse para una hembra.');
   if (!birth.occurredAt)
     issues.push('La fecha y hora del parto son obligatorias.');
+  if (
+    mother &&
+    birth.occurredAt &&
+    day(birth.occurredAt) < day(mother.birthDate)
+  )
+    issues.push('El parto es anterior al nacimiento de la madre.');
+  if (today && birth.occurredAt && birth.occurredAt.slice(0, 10) > today)
+    issues.push('El parto no puede registrarse en una fecha futura.');
   if (!birth.type) issues.push('El tipo de parto es obligatorio.');
+  if (!birth.condition) issues.push('La condición de la cría es obligatoria.');
+  if (birth.condition === 'Vivo' && !birth.sex)
+    issues.push('Una cría viva requiere registrar su sexo.');
   if (!activeCycle || activeCycle.status !== 'Gestación activa')
     issues.push('Parto sin gestación activa.');
   if (
@@ -289,8 +351,8 @@ export function deriveCycles(
       } else {
         current!.status = 'Cerrado por parto';
         current!.closedAt = birth.occurredAt;
+        current = undefined;
       }
-      current = undefined;
       continue;
     }
 
@@ -301,6 +363,18 @@ export function deriveCycles(
     if (!event.valid) {
       current!.status = 'Requiere revisión';
       current!.reviewReasons.push(...event.validationIssues);
+      continue;
+    }
+    if (
+      current!.status === 'Requiere revisión' &&
+      event.type !== 'Resolución de revisión'
+    ) {
+      continue;
+    }
+    if (event.type === 'Resolución de revisión') {
+      current!.status = 'Pendiente de diagnóstico';
+      current!.resolvedAt = event.occurredAt;
+      current!.resolutionNote = event.notes || 'Revisión resuelta.';
       continue;
     }
     if (event.type === 'Aborto') {

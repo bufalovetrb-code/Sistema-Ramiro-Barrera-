@@ -8,6 +8,7 @@ import {
   type Birth,
   type ReproductiveEvent,
   validateBirth,
+  validateEvent,
 } from '../lib/domain';
 
 describe('ciclos reproductivos', () => {
@@ -97,7 +98,12 @@ describe('ciclos reproductivos', () => {
     )[0];
     expect(
       validateBirth(
-        { motherId: animal.id, occurredAt: '2027-04-07T08:00' },
+        {
+          motherId: animal.id,
+          occurredAt: '2027-04-07T08:00',
+          condition: 'Vivo',
+          sex: 'Hembra',
+        },
         animal,
         active,
         defaultSettings,
@@ -116,7 +122,13 @@ describe('ciclos reproductivos', () => {
       valid: true,
       needsReview: false,
       validationIssues: validateBirth(
-        { motherId: animal.id, occurredAt: '2027-04-07T08:00', type: 'Normal' },
+        {
+          motherId: animal.id,
+          occurredAt: '2027-04-07T08:00',
+          type: 'Normal',
+          condition: 'Vivo',
+          sex: 'Hembra',
+        },
         animal,
         active,
         defaultSettings,
@@ -216,5 +228,107 @@ describe('ciclos reproductivos', () => {
       priorOpenDays: 21,
       currentOpenDays: 31,
     });
+  });
+  it('exige sexo para una cría viva y rechaza partos futuros', () => {
+    const animal = seedAnimals[2];
+    const active = deriveCycles(
+      animal,
+      seedEvents.filter((event) => event.animalId === animal.id),
+      [],
+      defaultSettings,
+    )[0];
+    expect(
+      validateBirth(
+        {
+          motherId: animal.id,
+          occurredAt: '2027-04-07T08:00',
+          type: 'Normal',
+          condition: 'Vivo',
+        },
+        animal,
+        active,
+        defaultSettings,
+      ),
+    ).toContain('Una cría viva requiere registrar su sexo.');
+    expect(
+      validateBirth(
+        {
+          motherId: animal.id,
+          occurredAt: '2027-04-07T08:00',
+          type: 'Normal',
+          condition: 'Vivo',
+          sex: 'Hembra',
+        },
+        animal,
+        active,
+        defaultSettings,
+        '2026-09-11',
+      ),
+    ).toContain('El parto no puede registrarse en una fecha futura.');
+  });
+  it('requiere un servicio previo para registrar diagnóstico', () => {
+    const animal = seedAnimals[2];
+    const diagnosis: ReproductiveEvent = {
+      id: 'diagnosis-without-service',
+      animalId: animal.id,
+      occurredAt: '2026-08-01T08:00',
+      type: 'Diagnóstico',
+      result: 'Gestante',
+      serviceDate: '2026-07-01',
+      valid: true,
+      validationIssues: [],
+      createdAt: '2026-08-01T08:00',
+    };
+    expect(validateEvent(diagnosis, animal)).toContain(
+      'Diagnóstico sin servicio previo registrado.',
+    );
+  });
+  it('mantiene una revisión hasta que se registra su resolución explícita', () => {
+    const animal = seedAnimals[2];
+    const pending: ReproductiveEvent = {
+      id: 'pending-review',
+      animalId: animal.id,
+      occurredAt: '2027-05-01T08:00',
+      type: 'Servicio',
+      result: '',
+      valid: false,
+      validationIssues: ['Dato pendiente de confirmar.'],
+      createdAt: '2027-05-01T08:00',
+    };
+    const resolution: ReproductiveEvent = {
+      id: 'review-resolution',
+      animalId: animal.id,
+      occurredAt: '2027-05-02T08:00',
+      type: 'Resolución de revisión',
+      result: '',
+      notes: 'Servicio confirmado con el operario.',
+      valid: true,
+      validationIssues: [],
+      createdAt: '2027-05-02T08:00',
+    };
+    const cycle = deriveCycles(
+      animal,
+      [pending, resolution],
+      [],
+      defaultSettings,
+    ).at(-1);
+    expect(cycle?.status).toBe('Pendiente de diagnóstico');
+    expect(cycle?.resolvedAt).toBe('2027-05-02T08:00');
+  });
+  it('bloquea nuevos eventos hasta resolver un ciclo en revisión', () => {
+    const animal = seedAnimals[2];
+    const service: ReproductiveEvent = {
+      id: 'service-while-reviewed',
+      animalId: animal.id,
+      occurredAt: '2027-05-02T08:00',
+      type: 'Servicio',
+      result: '',
+      valid: true,
+      validationIssues: [],
+      createdAt: '2027-05-02T08:00',
+    };
+    expect(validateEvent(service, animal, { hasOpenReview: true })).toContain(
+      'Este ciclo requiere una resolución explícita antes de registrar otro evento.',
+    );
   });
 });

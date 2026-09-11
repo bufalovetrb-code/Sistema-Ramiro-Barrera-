@@ -775,6 +775,38 @@ h1 {
   display: grid;
   gap: 18px;
 }
+.backup-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.backup-panel h3 {
+  font-size: 17px;
+}
+.backup-panel p:not(.eyebrow) {
+  max-width: 640px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 6px;
+}
+.backup-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex: 0 0 auto;
+}
+.backup-restore {
+  border: 1px solid #bcd7c8;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 700;
+}
+.backup-restore input {
+  display: none;
+}
 .security-panel p {
   color: var(--muted);
   font-size: 13px;
@@ -895,6 +927,10 @@ h1 {
   }
   .modal-card {
     padding: 18px;
+  }
+  .backup-panel {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 .age-hint {
