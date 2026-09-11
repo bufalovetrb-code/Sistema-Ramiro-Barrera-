@@ -75,6 +75,7 @@ export interface Settings {
   postServiceDiagnosisDays: number;
   earlyBirthToleranceDays: number;
   minimumBreedingAgeMonths: number;
+  animalRemovalCodeHash?: string;
 }
 
 export interface Cycle {
