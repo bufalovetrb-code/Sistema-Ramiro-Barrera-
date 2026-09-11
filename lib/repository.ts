@@ -1,18 +1,23 @@
-import { defaultSettings, seedAnimals, seedEvents, type Animal, type AuditEntry, type Birth, type ReproductiveEvent, type Settings } from './domain';
+import { defaultSettings, type Animal, type AuditEntry, type Birth, type ReproductiveEvent, type Settings } from './domain';
 
 export interface FarmData { animals: Animal[]; events: ReproductiveEvent[]; births: Birth[]; audits: AuditEntry[]; settings: Settings }
 const DB = 'rb-smartfarm-reproduccion';
 const STORE = 'farm-data';
 const KEY = 'singleton';
-const fresh = (): FarmData => ({ animals: seedAnimals, events: seedEvents, births: [], audits: [], settings: defaultSettings });
+const fresh = (): FarmData => ({ animals: [], events: [], births: [], audits: [], settings: { ...defaultSettings } });
 
 export class LocalFarmRepository {
   private db?: IDBDatabase;
   async open() {
     if (this.db) return this.db;
     this.db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(DB, 1);
-      request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+      const request = indexedDB.open(DB, 2);
+      request.onupgradeneeded = (event) => {
+        const store = request.result.objectStoreNames.contains(STORE)
+          ? request.transaction!.objectStore(STORE)
+          : request.result.createObjectStore(STORE);
+        if (event.oldVersion < 2) store.clear();
+      };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
