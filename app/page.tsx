@@ -89,15 +89,38 @@ const ageInMonths = (birthDate: string) => {
       (today.getDate() < birth.getDate() ? 1 : 0),
   );
 };
-const reproductiveCategory = (animal: Animal) => {
+const minimumBreedingAge = (animal: Animal) =>
+  animal.species === 'Búfalo' ? 24 : 18;
+const inventoryCategory = (animal: Animal) => {
   const months = ageInMonths(animal.birthDate);
-  const minimum = animal.species === 'Búfalo' ? 24 : 18;
-  if (months < 12) return { label: 'Cría · no apto', tone: 'neutral' };
-  if (months < minimum)
-    return { label: 'Levante · en desarrollo', tone: 'warning' };
+  const minimum = minimumBreedingAge(animal);
+  if (months < 12)
+    return { label: 'Cría', tone: 'neutral', group: 'cría' as const };
+  if (months < minimum) {
+    return animal.sex === 'Hembra'
+      ? {
+          label: 'Novilla / levante',
+          tone: 'warning',
+          group: 'novilla' as const,
+        }
+      : {
+          label: 'Macho joven / levante',
+          tone: 'warning',
+          group: 'joven' as const,
+        };
+  }
   return animal.sex === 'Hembra'
-    ? { label: 'Disponible para reproducción', tone: 'good' }
-    : { label: 'Reproductor potencial', tone: 'good' };
+    ? {
+        label: 'Hembra reproductora',
+        tone: 'good',
+        group: 'hembra-reproductora' as const,
+      }
+    : { label: 'Reproductor', tone: 'good', group: 'reproductor' as const };
+};
+const reproductiveCategory = (animal: Animal) => inventoryCategory(animal);
+const ageLabel = (animal: Animal) => {
+  const months = ageInMonths(animal.birthDate);
+  return `${Math.floor(months / 12)} año(s) y ${months % 12} mes(es)`;
 };
 const nextCalfDisplayId = (animals: Animal[], birthDate: string) => {
   const year = birthDate.slice(0, 4);
@@ -679,6 +702,11 @@ function Dashboard({
       <strong>{value}</strong>
     </article>
   );
+  const inventoryCount = (
+    group: ReturnType<typeof inventoryCategory>['group'],
+  ) =>
+    animals.filter((animal) => inventoryCategory(animal).group === group)
+      .length;
   return (
     <>
       <section className="hero">
@@ -715,6 +743,40 @@ function Dashboard({
           'purple',
         )}
         {metric('Ciclos por revisar', review.length, 'red')}
+      </section>
+      <section className="panel inventory-summary">
+        <div className="panel-head">
+          <div>
+            <p className="eyebrow">Inventario actual</p>
+            <h3>Animales presentes en la finca</h3>
+            <p>Clasificación automática según sexo, especie y edad.</p>
+          </div>
+          <button className="quiet" onClick={() => onNavigate('Animales')}>
+            Ver Base maestra <ChevronRight />
+          </button>
+        </div>
+        <div className="inventory-breakdown">
+          <div>
+            <span>Crías</span>
+            <strong>{inventoryCount('cría')}</strong>
+          </div>
+          <div>
+            <span>Novillas / levante</span>
+            <strong>{inventoryCount('novilla')}</strong>
+          </div>
+          <div>
+            <span>Hembras reproductoras</span>
+            <strong>{inventoryCount('hembra-reproductora')}</strong>
+          </div>
+          <div>
+            <span>Reproductores</span>
+            <strong>{inventoryCount('reproductor')}</strong>
+          </div>
+          <div>
+            <span>Machos jóvenes</span>
+            <strong>{inventoryCount('joven')}</strong>
+          </div>
+        </div>
       </section>
       <section className="dashboard-grid">
         <article className="panel">
@@ -830,6 +892,7 @@ function Animals({
 }) {
   const [showForm, setShowForm] = useState(false);
   const [history, setHistory] = useState<Animal | null>(null);
+  const [technicalSheet, setTechnicalSheet] = useState<Animal | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<Animal | null>(null);
   const [pendingWeaning, setPendingWeaning] = useState<Animal | null>(null);
   const visibleAnimals = animals.filter((animal) => !animal.deletedAt);
@@ -979,6 +1042,8 @@ function Animals({
             <tr>
               <th>Animal</th>
               <th>Especie</th>
+              <th>Sexo y edad</th>
+              <th>Categoría</th>
               <th>Ubicación</th>
               <th>Estado reproductivo</th>
               <th>Acciones</th>
@@ -987,13 +1052,14 @@ function Animals({
           <tbody>
             {visibleAnimals.length === 0 ? (
               <tr>
-                <td colSpan={5} className="empty">
+                <td colSpan={7} className="empty">
                   No hay animales activos registrados.
                 </td>
               </tr>
             ) : (
               visibleAnimals.map((animal) => {
                 const animalState = state(animal);
+                const category = inventoryCategory(animal);
                 return (
                   <tr key={animal.id}>
                     <td>
@@ -1013,6 +1079,15 @@ function Animals({
                       <small>{animal.breed}</small>
                     </td>
                     <td>
+                      {animal.sex}
+                      <small>{ageLabel(animal)}</small>
+                    </td>
+                    <td>
+                      <span className={`badge ${category.tone}`}>
+                        {category.label}
+                      </span>
+                    </td>
+                    <td>
                       {animal.lot ?? '—'}
                       <small>{animal.paddock ?? '—'}</small>
                     </td>
@@ -1023,6 +1098,12 @@ function Animals({
                     </td>
                     <td>
                       <div className="row-actions">
+                        <button
+                          className="quiet"
+                          onClick={() => setTechnicalSheet(animal)}
+                        >
+                          Ficha técnica
+                        </button>
                         <button
                           className="quiet"
                           onClick={() => setHistory(animal)}
@@ -1054,6 +1135,123 @@ function Animals({
           </tbody>
         </table>
       </section>
+      {technicalSheet && (
+        <div className="modal-backdrop" role="presentation">
+          <section
+            className="modal-card technical-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="technical-sheet-title"
+          >
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Ficha técnica</p>
+                <h3 id="technical-sheet-title">{technicalSheet.displayId}</h3>
+                <p>
+                  {technicalSheet.species} · {technicalSheet.breed}
+                </p>
+              </div>
+              <button
+                className="icon-button"
+                onClick={() => setTechnicalSheet(null)}
+                aria-label="Cerrar ficha técnica"
+              >
+                <X />
+              </button>
+            </div>
+            <div className="technical-grid">
+              <div>
+                <span>Sexo</span>
+                <strong>{technicalSheet.sex}</strong>
+              </div>
+              <div>
+                <span>Edad</span>
+                <strong>{ageLabel(technicalSheet)}</strong>
+              </div>
+              <div>
+                <span>Categoría</span>
+                <strong>{inventoryCategory(technicalSheet).label}</strong>
+              </div>
+              <div>
+                <span>Estado reproductivo</span>
+                <strong>{state(technicalSheet).label}</strong>
+              </div>
+              <div>
+                <span>Nacimiento</span>
+                <strong>{date(technicalSheet.birthDate)}</strong>
+              </div>
+              <div>
+                <span>Estado operativo</span>
+                <strong>{technicalSheet.status}</strong>
+              </div>
+              <div>
+                <span>Arete</span>
+                <strong>{technicalSheet.earTag || 'No registrado'}</strong>
+              </div>
+              <div>
+                <span>RFID</span>
+                <strong>{technicalSheet.rfid || 'No registrado'}</strong>
+              </div>
+              <div>
+                <span>Lote</span>
+                <strong>{technicalSheet.lot || 'No registrado'}</strong>
+              </div>
+              <div>
+                <span>Potrero</span>
+                <strong>{technicalSheet.paddock || 'No registrado'}</strong>
+              </div>
+            </div>
+            {motherIdOf(technicalSheet) && (
+              <p className="lineage-note">
+                Madre:{' '}
+                <strong>
+                  {animals.find(
+                    (animal) => animal.id === motherIdOf(technicalSheet),
+                  )?.displayId ?? 'No disponible'}
+                </strong>
+              </p>
+            )}
+            {offspringOf(technicalSheet.id).length > 0 && (
+              <p className="lineage-note">
+                Crías vinculadas:{' '}
+                <strong>
+                  {offspringOf(technicalSheet.id)
+                    .map((calf) => calf.displayId)
+                    .join(', ')}
+                </strong>
+              </p>
+            )}
+            {technicalSheet.weanedAt && (
+              <p className="lineage-note">
+                Destete:{' '}
+                <strong>
+                  {date(technicalSheet.weanedAt)}
+                  {technicalSheet.weaningWeightKg
+                    ? ` · ${technicalSheet.weaningWeightKg} kg`
+                    : ''}
+                </strong>
+              </p>
+            )}
+            <div className="modal-actions">
+              <button
+                className="quiet"
+                onClick={() => {
+                  setTechnicalSheet(null);
+                  setHistory(technicalSheet);
+                }}
+              >
+                Ver historial
+              </button>
+              <button
+                className="primary"
+                onClick={() => setTechnicalSheet(null)}
+              >
+                Cerrar ficha
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
       {history && (
         <div className="modal-backdrop" role="presentation">
           <section
