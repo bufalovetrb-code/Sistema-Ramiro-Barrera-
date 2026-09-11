@@ -166,7 +166,7 @@ const nextCalfDisplayId = (animals: Animal[], birthDate: string) => {
 };
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
-const restoreDataFrom = (source: unknown): FarmData | undefined => {
+export const restoreDataFrom = (source: unknown): FarmData | undefined => {
   if (!isRecord(source)) return undefined;
   const candidate = isRecord(source.data) ? source.data : source;
   if (
