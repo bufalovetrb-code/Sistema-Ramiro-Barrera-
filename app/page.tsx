@@ -8,6 +8,7 @@ import {
   ClipboardPlus,
   Beef,
   FileSearch,
+  Funnel,
   HeartPulse,
   Menu,
   Plus,
@@ -39,6 +40,25 @@ type View =
   | 'Partos'
   | 'Auditoría'
   | 'Configuración';
+type AnimalListFilter =
+  | 'all'
+  | 'parous-females'
+  | 'heifers'
+  | 'females'
+  | 'breeding-females'
+  | 'calves'
+  | 'breeders'
+  | 'young-males';
+const animalListFilters: { value: AnimalListFilter; label: string }[] = [
+  { value: 'all', label: 'Todos' },
+  { value: 'parous-females', label: 'Hembras paridas' },
+  { value: 'heifers', label: 'Novillas / levante' },
+  { value: 'breeding-females', label: 'Hembras reproductoras' },
+  { value: 'females', label: 'Todas las hembras' },
+  { value: 'calves', label: 'Crías' },
+  { value: 'breeders', label: 'Reproductores' },
+  { value: 'young-males', label: 'Machos jóvenes' },
+];
 const empty: FarmData = {
   animals: [],
   events: [],
@@ -139,6 +159,7 @@ export default function Home() {
   const [data, setData] = useState<FarmData>(empty);
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState<View>('Resumen');
+  const [animalFilter, setAnimalFilter] = useState<AnimalListFilter>('all');
   const [mobileNav, setMobileNav] = useState(false);
   const [notice, setNotice] = useState('');
   const repo = useMemo(() => new LocalFarmRepository(), []);
@@ -567,6 +588,7 @@ export default function Home() {
               className={view === label ? 'nav-active' : ''}
               onClick={() => {
                 setView(label);
+                if (label === 'Animales') setAnimalFilter('all');
                 setMobileNav(false);
               }}
             >
@@ -631,6 +653,10 @@ export default function Home() {
                 upcoming={upcoming}
                 review={reviewCycles}
                 onNavigate={setView}
+                onOpenAnimals={(filter) => {
+                  setAnimalFilter(filter);
+                  setView('Animales');
+                }}
               />
             )}
             {view === 'Animales' && (
@@ -640,6 +666,8 @@ export default function Home() {
                 events={data.events}
                 births={data.births}
                 audits={data.audits}
+                selectedFilter={animalFilter}
+                onFilterChange={setAnimalFilter}
                 onAdd={addAnimal}
                 onRetire={retireAnimal}
                 onWean={registerWeaning}
@@ -688,6 +716,7 @@ function Dashboard({
   upcoming,
   review,
   onNavigate,
+  onOpenAnimals,
 }: {
   animals: Animal[];
   cycles: Cycle[];
@@ -695,6 +724,7 @@ function Dashboard({
   upcoming: Cycle[];
   review: Cycle[];
   onNavigate: (v: View) => void;
+  onOpenAnimals: (filter: AnimalListFilter) => void;
 }) {
   const metric = (label: string, value: number, tone: string) => (
     <article className={`metric ${tone}`} key={label}>
@@ -751,31 +781,31 @@ function Dashboard({
             <h3>Animales presentes en la finca</h3>
             <p>Clasificación automática según sexo, especie y edad.</p>
           </div>
-          <button className="quiet" onClick={() => onNavigate('Animales')}>
+          <button className="quiet" onClick={() => onOpenAnimals('all')}>
             Ver Base maestra <ChevronRight />
           </button>
         </div>
         <div className="inventory-breakdown">
-          <div>
+          <button onClick={() => onOpenAnimals('calves')}>
             <span>Crías</span>
             <strong>{inventoryCount('cría')}</strong>
-          </div>
-          <div>
+          </button>
+          <button onClick={() => onOpenAnimals('heifers')}>
             <span>Novillas / levante</span>
             <strong>{inventoryCount('novilla')}</strong>
-          </div>
-          <div>
+          </button>
+          <button onClick={() => onOpenAnimals('breeding-females')}>
             <span>Hembras reproductoras</span>
             <strong>{inventoryCount('hembra-reproductora')}</strong>
-          </div>
-          <div>
+          </button>
+          <button onClick={() => onOpenAnimals('breeders')}>
             <span>Reproductores</span>
             <strong>{inventoryCount('reproductor')}</strong>
-          </div>
-          <div>
+          </button>
+          <button onClick={() => onOpenAnimals('young-males')}>
             <span>Machos jóvenes</span>
             <strong>{inventoryCount('joven')}</strong>
-          </div>
+          </button>
         </div>
       </section>
       <section className="dashboard-grid">
@@ -877,6 +907,8 @@ function Animals({
   events,
   births,
   audits,
+  selectedFilter,
+  onFilterChange,
   onAdd,
   onRetire,
   onWean,
@@ -886,6 +918,8 @@ function Animals({
   events: ReproductiveEvent[];
   births: Birth[];
   audits: AuditEntry[];
+  selectedFilter: AnimalListFilter;
+  onFilterChange: (filter: AnimalListFilter) => void;
   onAdd: (form: HTMLFormElement) => void;
   onRetire: (animal: Animal, passcode: string) => Promise<boolean>;
   onWean: (animal: Animal, form: HTMLFormElement) => Promise<boolean>;
@@ -895,6 +929,13 @@ function Animals({
   const [technicalSheet, setTechnicalSheet] = useState<Animal | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<Animal | null>(null);
   const [pendingWeaning, setPendingWeaning] = useState<Animal | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [speciesFilter, setSpeciesFilter] = useState<
+    'Todas' | Animal['species']
+  >('Todas');
+  const [reproductiveFilter, setReproductiveFilter] = useState<
+    'Todos' | CycleStatus
+  >('Todos');
   const visibleAnimals = animals.filter((animal) => !animal.deletedAt);
   const state = (animal: Animal) => {
     const cycle = cycles.filter((item) => item.animalId === animal.id).at(-1);
@@ -902,6 +943,39 @@ function Animals({
       ? { label: cycle.status, tone: statusClass(cycle.status) }
       : reproductiveCategory(animal);
   };
+  const hasValidatedBirth = (animal: Animal) =>
+    births.some((birth) => birth.motherId === animal.id && birth.valid);
+  const matchesCategory = (animal: Animal) => {
+    const category = inventoryCategory(animal).group;
+    switch (selectedFilter) {
+      case 'parous-females':
+        return animal.sex === 'Hembra' && hasValidatedBirth(animal);
+      case 'heifers':
+        return category === 'novilla';
+      case 'females':
+        return animal.sex === 'Hembra';
+      case 'breeding-females':
+        return category === 'hembra-reproductora';
+      case 'calves':
+        return category === 'cría';
+      case 'breeders':
+        return category === 'reproductor';
+      case 'young-males':
+        return category === 'joven';
+      default:
+        return true;
+    }
+  };
+  const filteredAnimals = visibleAnimals.filter(
+    (animal) =>
+      matchesCategory(animal) &&
+      (speciesFilter === 'Todas' || animal.species === speciesFilter) &&
+      (reproductiveFilter === 'Todos' ||
+        state(animal).label === reproductiveFilter),
+  );
+  const activeFilterLabel = animalListFilters.find(
+    (filter) => filter.value === selectedFilter,
+  )?.label;
   const motherIdOf = (animal: Animal) =>
     animal.motherId ??
     births.find((birth) => birth.calfId === animal.id)?.motherId;
@@ -986,10 +1060,102 @@ function Animals({
           <h2>Animales</h2>
           <p>La eliminación operativa conserva todo el historial del animal.</p>
         </div>
-        <button className="primary" onClick={() => setShowForm(!showForm)}>
-          <Plus /> Nuevo animal
-        </button>
+        <div className="section-actions">
+          <button
+            className={`quiet filter-trigger ${filtersOpen ? 'active' : ''}`}
+            onClick={() => setFiltersOpen(!filtersOpen)}
+            aria-expanded={filtersOpen}
+          >
+            <Funnel /> Filtros
+          </button>
+          <button className="primary" onClick={() => setShowForm(!showForm)}>
+            <Plus /> Nuevo animal
+          </button>
+        </div>
       </section>
+      {filtersOpen && (
+        <section
+          className="panel animal-filters"
+          aria-label="Filtros de animales"
+        >
+          <div className="filter-heading">
+            <div>
+              <p className="eyebrow">Consultar inventario</p>
+              <h3>Filtrar animales</h3>
+              <p>Los filtros organizan la lista sin cambiar ningún registro.</p>
+            </div>
+            <button
+              className="quiet"
+              onClick={() => {
+                onFilterChange('all');
+                setSpeciesFilter('Todas');
+                setReproductiveFilter('Todos');
+              }}
+            >
+              Limpiar filtros
+            </button>
+          </div>
+          <div className="filter-groups">
+            <div>
+              <span className="filter-label">Grupo de animales</span>
+              <div className="filter-chips">
+                {animalListFilters.map((filter) => (
+                  <button
+                    key={filter.value}
+                    className={
+                      selectedFilter === filter.value ? 'selected' : ''
+                    }
+                    onClick={() => onFilterChange(filter.value)}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label>
+              <span className="filter-label">Especie</span>
+              <select
+                value={speciesFilter}
+                onChange={(event) =>
+                  setSpeciesFilter(
+                    event.target.value as 'Todas' | Animal['species'],
+                  )
+                }
+              >
+                <option value="Todas">Todas las especies</option>
+                <option value="Bovino">Bovino</option>
+                <option value="Búfalo">Búfalo</option>
+              </select>
+            </label>
+            <label>
+              <span className="filter-label">Estado reproductivo</span>
+              <select
+                value={reproductiveFilter}
+                onChange={(event) =>
+                  setReproductiveFilter(
+                    event.target.value as 'Todos' | CycleStatus,
+                  )
+                }
+              >
+                <option value="Todos">Todos los estados</option>
+                {(
+                  [
+                    'Gestación activa',
+                    'Vacía',
+                    'Requiere revisión',
+                    'Cerrado por parto',
+                    'Aborto',
+                  ] as CycleStatus[]
+                ).map((status) => (
+                  <option key={status} value={status}>
+                    {status}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </section>
+      )}
       {showForm && (
         <form
           className="entry-form"
@@ -1037,6 +1203,26 @@ function Animals({
         </form>
       )}
       <section className="panel table-panel">
+        <div className="table-filter-summary" aria-live="polite">
+          <div>
+            <span>Resultado de la consulta</span>
+            <strong>
+              Mostrando {filteredAnimals.length} de {visibleAnimals.length}{' '}
+              animales
+            </strong>
+          </div>
+          {(selectedFilter !== 'all' ||
+            speciesFilter !== 'Todas' ||
+            reproductiveFilter !== 'Todos') && (
+            <p>
+              {selectedFilter !== 'all' && activeFilterLabel}
+              {speciesFilter !== 'Todas' &&
+                `${selectedFilter !== 'all' ? ' · ' : ''}${speciesFilter}`}
+              {reproductiveFilter !== 'Todos' &&
+                `${selectedFilter !== 'all' || speciesFilter !== 'Todas' ? ' · ' : ''}${reproductiveFilter}`}
+            </p>
+          )}
+        </div>
         <table>
           <thead>
             <tr>
@@ -1056,8 +1242,14 @@ function Animals({
                   No hay animales activos registrados.
                 </td>
               </tr>
+            ) : filteredAnimals.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="empty">
+                  No hay animales que cumplan estos filtros.
+                </td>
+              </tr>
             ) : (
-              visibleAnimals.map((animal) => {
+              filteredAnimals.map((animal) => {
                 const animalState = state(animal);
                 const category = inventoryCategory(animal);
                 return (
