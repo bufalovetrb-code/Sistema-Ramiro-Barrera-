@@ -47,6 +47,8 @@ type AnimalListFilter =
   | 'females'
   | 'breeding-females'
   | 'calves'
+  | 'female-calves'
+  | 'male-calves'
   | 'breeders'
   | 'young-males';
 const animalListFilters: { value: AnimalListFilter; label: string }[] = [
@@ -55,7 +57,9 @@ const animalListFilters: { value: AnimalListFilter; label: string }[] = [
   { value: 'heifers', label: 'Novillas / levante' },
   { value: 'breeding-females', label: 'Hembras reproductoras' },
   { value: 'females', label: 'Todas las hembras' },
-  { value: 'calves', label: 'Crías' },
+  { value: 'calves', label: 'Todas las crías' },
+  { value: 'female-calves', label: 'Crías hembras' },
+  { value: 'male-calves', label: 'Crías machos' },
   { value: 'breeders', label: 'Reproductores' },
   { value: 'young-males', label: 'Machos jóvenes' },
 ];
@@ -737,6 +741,11 @@ function Dashboard({
   ) =>
     animals.filter((animal) => inventoryCategory(animal).group === group)
       .length;
+  const calfCount = (sex: Animal['sex']) =>
+    animals.filter(
+      (animal) =>
+        inventoryCategory(animal).group === 'cría' && animal.sex === sex,
+    ).length;
   return (
     <>
       <section className="hero">
@@ -786,9 +795,13 @@ function Dashboard({
           </button>
         </div>
         <div className="inventory-breakdown">
-          <button onClick={() => onOpenAnimals('calves')}>
-            <span>Crías</span>
-            <strong>{inventoryCount('cría')}</strong>
+          <button onClick={() => onOpenAnimals('female-calves')}>
+            <span>Crías hembras</span>
+            <strong>{calfCount('Hembra')}</strong>
+          </button>
+          <button onClick={() => onOpenAnimals('male-calves')}>
+            <span>Crías machos</span>
+            <strong>{calfCount('Macho')}</strong>
           </button>
           <button onClick={() => onOpenAnimals('heifers')}>
             <span>Novillas / levante</span>
@@ -958,6 +971,10 @@ function Animals({
         return category === 'hembra-reproductora';
       case 'calves':
         return category === 'cría';
+      case 'female-calves':
+        return category === 'cría' && animal.sex === 'Hembra';
+      case 'male-calves':
+        return category === 'cría' && animal.sex === 'Macho';
       case 'breeders':
         return category === 'reproductor';
       case 'young-males':
