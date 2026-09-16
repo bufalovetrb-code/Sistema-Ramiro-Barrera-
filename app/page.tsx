@@ -10,6 +10,7 @@ import {
   FileSearch,
   Funnel,
   HeartPulse,
+  ListTodo,
   Menu,
   Plus,
   Settings2,
@@ -31,12 +32,14 @@ import {
   validateEvent,
 } from '@/lib/domain';
 import { LocalFarmRepository, type FarmData } from '@/lib/repository';
+import { reproductiveAgenda, type AgendaItem } from '@/lib/agenda';
 
 type View =
   | 'Resumen'
   | 'Animales'
   | 'Eventos'
   | 'Ciclos'
+  | 'Agenda'
   | 'Partos'
   | 'Auditoría'
   | 'Configuración';
@@ -633,19 +636,20 @@ export default function Home() {
     setNotice('Clave de eliminación guardada en este dispositivo.');
   };
   const activeAnimals = data.animals.filter((item) => !item.deletedAt);
-  const activeCycles = cycles.filter(
-    (cycle) => cycle.status === 'Gestación activa',
-  );
   const reviewCycles = cycles.filter(
     (cycle) => cycle.status === 'Requiere revisión',
   );
   const nowDay = new Date().toISOString().slice(0, 10);
-  const upcoming = activeCycles.filter(
-    (cycle) =>
-      cycle.expectedBirthDate &&
-      new Date(`${cycle.expectedBirthDate}T12:00:00`).getTime() -
-        new Date(`${nowDay}T12:00:00`).getTime() <=
-        data.settings.upcomingBirthDays * 86_400_000,
+  const agenda = useMemo(
+    () =>
+      reproductiveAgenda(
+        activeAnimals,
+        data.events,
+        cycles,
+        data.settings,
+        nowDay,
+      ),
+    [activeAnimals, cycles, data.events, data.settings, nowDay],
   );
   const nav: { icon: React.ReactNode; label: View }[] = [
     { icon: <HeartPulse />, label: 'Resumen' },
@@ -659,6 +663,7 @@ export default function Home() {
     },
     { icon: <ClipboardPlus />, label: 'Eventos' },
     { icon: <CalendarDays />, label: 'Ciclos' },
+    { icon: <ListTodo />, label: 'Agenda' },
     {
       icon: (
         <span className="nav-animal-icon" aria-hidden="true">
@@ -705,6 +710,9 @@ export default function Home() {
               {label}
               {label === 'Ciclos' && reviewCycles.length > 0 && (
                 <em>{reviewCycles.length}</em>
+              )}
+              {label === 'Agenda' && agenda.length > 0 && (
+                <em>{agenda.length}</em>
               )}
             </button>
           ))}
@@ -759,8 +767,8 @@ export default function Home() {
                 animals={activeAnimals}
                 cycles={cycles}
                 births={data.births}
-                upcoming={upcoming}
                 review={reviewCycles}
+                agenda={agenda}
                 settings={data.settings}
                 onNavigate={setView}
                 onOpenAnimals={(filter) => {
@@ -794,6 +802,9 @@ export default function Home() {
             {view === 'Ciclos' && (
               <Cycles cycles={cycles} animals={activeAnimals} />
             )}
+            {view === 'Agenda' && (
+              <Agenda items={agenda} onNavigate={setView} />
+            )}
             {view === 'Partos' && (
               <Births
                 births={data.births}
@@ -826,8 +837,8 @@ function Dashboard({
   animals,
   cycles,
   births,
-  upcoming,
   review,
+  agenda,
   settings,
   onNavigate,
   onOpenAnimals,
@@ -835,8 +846,8 @@ function Dashboard({
   animals: Animal[];
   cycles: Cycle[];
   births: Birth[];
-  upcoming: Cycle[];
   review: Cycle[];
+  agenda: AgendaItem[];
   settings: Settings;
   onNavigate: (v: View) => void;
   onOpenAnimals: (filter: AnimalListFilter) => void;
@@ -941,29 +952,16 @@ function Dashboard({
               <h3>Alertas prioritarias</h3>
               <p>Información que requiere seguimiento.</p>
             </div>
-            <button className="quiet" onClick={() => onNavigate('Ciclos')}>
-              Ver ciclos <ChevronRight />
+            <button className="quiet" onClick={() => onNavigate('Agenda')}>
+              Ver agenda <ChevronRight />
             </button>
           </div>
-          {review.length === 0 && upcoming.length === 0 ? (
+          {agenda.length === 0 ? (
             <p className="empty">No hay alertas abiertas.</p>
           ) : (
             <div className="alert-list">
-              {review.map((cycle) => (
-                <AlertRow
-                  key={cycle.id}
-                  cycle={cycle}
-                  kind="review"
-                  animals={animals}
-                />
-              ))}
-              {upcoming.map((cycle) => (
-                <AlertRow
-                  key={cycle.id}
-                  cycle={cycle}
-                  kind="upcoming"
-                  animals={animals}
-                />
+              {agenda.slice(0, 4).map((item) => (
+                <AgendaRow key={item.id} item={item} />
               ))}
             </div>
           )}
@@ -998,33 +996,106 @@ function Dashboard({
     </>
   );
 }
-function AlertRow({
-  cycle,
-  kind,
-  animals,
-}: {
-  cycle: Cycle;
-  kind: 'review' | 'upcoming';
-  animals: Animal[];
-}) {
-  const animal = animals.find((item) => item.id === cycle.animalId);
+function AgendaRow({ item }: { item: AgendaItem }) {
   return (
     <div className="alert-row">
-      <span className={`icon-tile ${kind}`}>
+      <span
+        className={`icon-tile ${item.priority === 'Urgente' ? 'review' : 'upcoming'}`}
+      >
         <AlertTriangle />
       </span>
       <div>
-        <strong>{animal?.displayId ?? 'Animal eliminado'}</strong>
-        <p>
-          {kind === 'review'
-            ? cycle.reviewReasons.join(' ')
-            : `Parto previsto: ${date(cycle.expectedBirthDate)}`}
-        </p>
+        <strong>{item.title}</strong>
+        <p>{item.detail}</p>
       </div>
-      <span className={`badge ${kind === 'review' ? 'danger' : 'warning'}`}>
-        {kind === 'review' ? 'Revisar ciclo' : 'Próximo parto'}
+      <span
+        className={`badge ${item.priority === 'Urgente' ? 'danger' : 'warning'}`}
+      >
+        {item.priority}
       </span>
     </div>
+  );
+}
+
+function Agenda({
+  items,
+  onNavigate,
+}: {
+  items: AgendaItem[];
+  onNavigate: (view: View) => void;
+}) {
+  const [filter, setFilter] = useState<'Todas' | 'Urgente' | 'Próximo'>(
+    'Todas',
+  );
+  const visibleItems = items.filter(
+    (item) => filter === 'Todas' || item.priority === filter,
+  );
+  const destination: Record<AgendaItem['kind'], View> = {
+    review: 'Ciclos',
+    diagnosis: 'Eventos',
+    birth: 'Partos',
+  };
+  const actionLabel: Record<AgendaItem['kind'], string> = {
+    review: 'Ver ciclo',
+    diagnosis: 'Registrar diagnóstico',
+    birth: 'Registrar parto',
+  };
+  return (
+    <>
+      <section className="section-head">
+        <div>
+          <p className="eyebrow">Trabajo del día</p>
+          <h2>Agenda reproductiva</h2>
+          <p>
+            Pendientes obtenidos de ciclos, servicios y fechas probables de
+            parto.
+          </p>
+        </div>
+      </section>
+      <section className="panel agenda-toolbar">
+        <div>
+          <strong>{items.length} pendiente(s)</strong>
+          <small>Se actualiza con los registros de este dispositivo.</small>
+        </div>
+        <div className="agenda-filters" aria-label="Filtrar agenda">
+          {(['Todas', 'Urgente', 'Próximo'] as const).map((item) => (
+            <button
+              key={item}
+              className={filter === item ? 'selected' : ''}
+              onClick={() => setFilter(item)}
+            >
+              {item}
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="agenda-list">
+        {visibleItems.length === 0 ? (
+          <div className="panel empty">No hay pendientes para este filtro.</div>
+        ) : (
+          visibleItems.map((item) => (
+            <article className="panel agenda-card" key={item.id}>
+              <div>
+                <span
+                  className={`badge ${item.priority === 'Urgente' ? 'danger' : 'warning'}`}
+                >
+                  {item.priority}
+                </span>
+                <h3>{item.title}</h3>
+                <p>{item.detail}</p>
+                <small>Fecha: {date(item.dueDate)}</small>
+              </div>
+              <button
+                className="quiet"
+                onClick={() => onNavigate(destination[item.kind])}
+              >
+                {actionLabel[item.kind]} <ChevronRight />
+              </button>
+            </article>
+          ))
+        )}
+      </section>
+    </>
   );
 }
 function Animals({
