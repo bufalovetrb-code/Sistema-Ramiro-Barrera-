@@ -331,4 +331,80 @@ describe('ciclos reproductivos', () => {
       'Este ciclo requiere una resolución explícita antes de registrar otro evento.',
     );
   });
+  it('exige el método del servicio y bloquea servicios durante una gestación', () => {
+    const animal = seedAnimals[2];
+    const service: ReproductiveEvent = {
+      id: 'service-without-method',
+      animalId: animal.id,
+      occurredAt: '2027-01-05T08:00',
+      type: 'Servicio',
+      result: '',
+      valid: true,
+      validationIssues: [],
+      createdAt: '2027-01-05T08:00',
+    };
+    const issues = validateEvent(service, animal, {
+      cycleStatus: 'Gestación activa',
+    });
+    expect(issues).toContain('Un servicio requiere el método utilizado.');
+    expect(issues).toContain(
+      'No se puede registrar un servicio durante una gestación activa.',
+    );
+  });
+  it('exige método de diagnóstico y un servicio registrado', () => {
+    const animal = seedAnimals[2];
+    const diagnosis: ReproductiveEvent = {
+      id: 'diagnosis-without-method',
+      animalId: animal.id,
+      occurredAt: '2027-02-01T08:00',
+      type: 'Diagnóstico',
+      result: 'Gestante',
+      serviceDate: '2027-01-01',
+      valid: true,
+      validationIssues: [],
+      createdAt: '2027-02-01T08:00',
+    };
+    const issues = validateEvent(diagnosis, animal, { previousEvents: [] });
+    expect(issues).toContain('Un diagnóstico requiere el método utilizado.');
+    expect(issues).toContain('Diagnóstico sin servicio previo registrado.');
+  });
+  it('solo acepta aborto con una gestación activa y causa documentada', () => {
+    const animal = seedAnimals[2];
+    const abortion: ReproductiveEvent = {
+      id: 'abortion-1',
+      animalId: animal.id,
+      occurredAt: '2027-02-10T08:00',
+      type: 'Aborto',
+      result: '',
+      abortionCause: 'Enfermedad',
+      abortionStage: 'Segundo tercio',
+      valid: true,
+      validationIssues: [],
+      createdAt: '2027-02-10T08:00',
+    };
+    expect(
+      validateEvent(abortion, animal, { cycleStatus: 'Gestación activa' }),
+    ).toEqual([]);
+    expect(
+      validateEvent({ ...abortion, abortionCause: undefined }, animal, {
+        cycleStatus: 'Vacía',
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        'Aborto sin gestación activa.',
+        'Un aborto requiere registrar su causa.',
+      ]),
+    );
+    expect(
+      deriveCycles(
+        animal,
+        [
+          ...seedEvents.filter((event) => event.animalId === animal.id),
+          abortion,
+        ],
+        [],
+        defaultSettings,
+      ).at(-1)?.status,
+    ).toBe('Aborto');
+  });
 });

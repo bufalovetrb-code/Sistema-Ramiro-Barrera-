@@ -76,6 +76,37 @@ const empty: FarmData = {
 const fmt = new Intl.DateTimeFormat('es-CO', { dateStyle: 'medium' });
 const date = (value?: string) =>
   value ? fmt.format(new Date(`${value.slice(0, 10)}T12:00:00`)) : '—';
+const eventDetail = (event: ReproductiveEvent) => {
+  if (event.type === 'Servicio')
+    return [
+      event.serviceMethod,
+      event.serviceReference,
+      event.responsible && `Responsable: ${event.responsible}`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  if (event.type === 'Diagnóstico')
+    return [
+      event.diagnosisMethod,
+      event.serviceDate && `Servicio: ${date(event.serviceDate)}`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  if (event.type === 'Aborto')
+    return [event.abortionCause, event.abortionStage, event.notes]
+      .filter(Boolean)
+      .join(' · ');
+  return event.notes || 'Sin detalle registrado';
+};
+const birthDetail = (birth: Birth) =>
+  [
+    birth.valid ? 'Parto validado' : birth.validationIssues.join(' '),
+    birth.condition,
+    birth.calfWeightKg && `${birth.calfWeightKg} kg al nacer`,
+    birth.motherNotes,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 const statusClass = (status: CycleStatus) =>
   status === 'Gestación activa'
     ? 'good'
@@ -338,7 +369,20 @@ export default function Home() {
       type: formValue(values, 'type') as ReproductiveEvent['type'],
       result: formValue(values, 'result') as ReproductiveEvent['result'],
       serviceDate: formValue(values, 'serviceDate') || undefined,
-      diagnosisDate: formValue(values, 'diagnosisDate') || undefined,
+      diagnosisDate:
+        formValue(values, 'diagnosisDate') ||
+        (formValue(values, 'type') === 'Diagnóstico'
+          ? formValue(values, 'occurredAt').slice(0, 10)
+          : undefined),
+      serviceMethod: (formValue(values, 'serviceMethod') ||
+        undefined) as ReproductiveEvent['serviceMethod'],
+      serviceReference: formValue(values, 'serviceReference') || undefined,
+      responsible: formValue(values, 'responsible') || undefined,
+      diagnosisMethod: (formValue(values, 'diagnosisMethod') ||
+        undefined) as ReproductiveEvent['diagnosisMethod'],
+      abortionCause: (formValue(values, 'abortionCause') ||
+        undefined) as ReproductiveEvent['abortionCause'],
+      abortionStage: formValue(values, 'abortionStage') || undefined,
       notes: formValue(values, 'notes') || undefined,
       valid: true,
       validationIssues: [],
@@ -352,6 +396,8 @@ export default function Home() {
         (cycle) =>
           cycle.animalId === animalId && cycle.status === 'Requiere revisión',
       ),
+      cycleStatus: cycles.filter((cycle) => cycle.animalId === animalId).at(-1)
+        ?.status,
       today: new Date().toISOString().slice(0, 10),
     });
     draft.valid = draft.validationIssues.length === 0;
@@ -382,13 +428,25 @@ export default function Home() {
     const sex = (formValue(values, 'sex') || undefined) as Birth['sex'];
     const condition = (formValue(values, 'condition') ||
       undefined) as Birth['condition'];
+    const calfWeightText = formValue(values, 'calfWeightKg');
+    const calfWeightKg = calfWeightText ? Number(calfWeightText) : undefined;
+    const calfDisplayId = formValue(values, 'calfDisplayId').trim();
     const issues = validateBirth(
-      { motherId, occurredAt, type, sex, condition },
+      { motherId, occurredAt, type, sex, condition, calfWeightKg },
       mother,
       relevant,
       data.settings,
       new Date().toISOString().slice(0, 10),
     );
+    if (
+      calfDisplayId &&
+      data.animals.some(
+        (animal) =>
+          animal.displayId.trim().toLocaleLowerCase() ===
+          calfDisplayId.toLocaleLowerCase(),
+      )
+    )
+      issues.push('El ID visible de la cría ya está en uso.');
     const birthId = uid();
     const shouldCreateCalf =
       issues.length === 0 &&
@@ -397,7 +455,9 @@ export default function Home() {
     const calf = shouldCreateCalf
       ? {
           id: uid(),
-          displayId: nextCalfDisplayId(data.animals, occurredAt.slice(0, 10)),
+          displayId:
+            calfDisplayId ||
+            nextCalfDisplayId(data.animals, occurredAt.slice(0, 10)),
           species: mother.species,
           breed: mother.breed,
           sex: sex as Animal['sex'],
@@ -419,6 +479,10 @@ export default function Home() {
       sex,
       condition,
       assistance: formValue(values, 'assistance') || undefined,
+      calfDisplayId: calf?.displayId,
+      calfWeightKg,
+      calfNotes: formValue(values, 'calfNotes') || undefined,
+      motherNotes: formValue(values, 'motherNotes') || undefined,
       valid: issues.length === 0,
       needsReview: issues.length > 0,
       validationIssues: issues,
@@ -471,7 +535,9 @@ export default function Home() {
     const now = new Date().toISOString();
     const calf: Animal = {
       id: uid(),
-      displayId: nextCalfDisplayId(data.animals, birth.occurredAt.slice(0, 10)),
+      displayId:
+        birth.calfDisplayId ||
+        nextCalfDisplayId(data.animals, birth.occurredAt.slice(0, 10)),
       species: mother.species,
       breed: mother.breed,
       sex: birth.sex ?? 'Hembra',
@@ -1216,16 +1282,14 @@ function Animals({
         .map((item) => ({
           at: item.occurredAt,
           title: `Evento: ${item.type}`,
-          detail: item.result || item.notes || 'Sin resultado especificado',
+          detail: item.result || eventDetail(item),
         })),
       ...births
         .filter((item) => item.motherId === animal.id)
         .map((item) => ({
           at: item.occurredAt,
           title: `Parto: ${item.type}`,
-          detail: item.valid
-            ? 'Parto validado'
-            : item.validationIssues.join(' ') || 'Requiere revisión',
+          detail: birthDetail(item) || 'Requiere revisión',
         })),
       ...(animal.weanedAt
         ? [
@@ -1948,8 +2012,11 @@ function Events({
 }: {
   events: ReproductiveEvent[];
   animals: Animal[];
-  onAdd: (form: HTMLFormElement) => void;
+  onAdd: (form: HTMLFormElement) => Promise<void>;
 }) {
+  const [eventType, setEventType] = useState<ReproductiveEvent['type'] | ''>(
+    '',
+  );
   return (
     <>
       <section className="section-head">
@@ -1960,9 +2027,10 @@ function Events({
       </section>
       <form
         className="entry-form"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          onAdd(e.currentTarget);
+          await onAdd(e.currentTarget);
+          setEventType('');
         }}
       >
         <Select
@@ -1990,14 +2058,97 @@ function Events({
             'Resolución de revisión',
             'Otro',
           ]}
+          placeholder="Selecciona el tipo"
+          value={eventType}
+          onChange={(event) =>
+            setEventType(event.target.value as ReproductiveEvent['type'])
+          }
+          required
         />
-        <Select
-          label="Resultado"
-          name="result"
-          options={['', 'Gestante', 'Vacía', 'Dudosa', 'No evaluable']}
-        />
-        <Input label="Fecha de servicio" name="serviceDate" type="date" />
-        <Input label="Fecha diagnóstico" name="diagnosisDate" type="date" />
+        {eventType === 'Servicio' && (
+          <>
+            <Select
+              label="Método de servicio"
+              name="serviceMethod"
+              options={[
+                'Inseminación artificial',
+                'Monta natural',
+                'Transferencia de embrión',
+                'Otro',
+              ]}
+              placeholder="Selecciona el método"
+              defaultValue=""
+              required
+            />
+            <Input
+              label="Reproductor, pajilla o embrión"
+              name="serviceReference"
+              placeholder="Ej. Toro 23 o lote de pajilla"
+            />
+            <Input label="Responsable" name="responsible" />
+          </>
+        )}
+        {eventType === 'Diagnóstico' && (
+          <>
+            <Select
+              label="Resultado del diagnóstico"
+              name="result"
+              options={['Gestante', 'Vacía', 'Dudosa', 'No evaluable']}
+              placeholder="Selecciona el resultado"
+              defaultValue=""
+              required
+            />
+            <Input
+              label="Fecha del servicio previo"
+              name="serviceDate"
+              type="date"
+              required
+            />
+            <Select
+              label="Método de diagnóstico"
+              name="diagnosisMethod"
+              options={[
+                'Palpación',
+                'Ecografía',
+                'Prueba de laboratorio',
+                'Otro',
+              ]}
+              placeholder="Selecciona el método"
+              defaultValue=""
+              required
+            />
+          </>
+        )}
+        {eventType === 'Aborto' && (
+          <>
+            <Select
+              label="Causa del aborto"
+              name="abortionCause"
+              options={[
+                'Desconocida',
+                'Enfermedad',
+                'Trauma',
+                'Nutricional',
+                'Otra',
+              ]}
+              placeholder="Selecciona la causa"
+              defaultValue=""
+              required
+            />
+            <Input
+              label="Etapa de gestación"
+              name="abortionStage"
+              placeholder="Ej. Segundo tercio"
+            />
+          </>
+        )}
+        {eventType === 'Diagnóstico' && (
+          <Input
+            label="Fecha de diagnóstico"
+            name="diagnosisDate"
+            type="date"
+          />
+        )}
         <Input label="Notas" name="notes" />
         <button className="primary form-submit">Registrar evento</button>
       </form>
@@ -2009,6 +2160,7 @@ function Events({
               <th>Animal</th>
               <th>Evento</th>
               <th>Resultado</th>
+              <th>Detalle</th>
               <th>Validación</th>
             </tr>
           </thead>
@@ -2026,6 +2178,7 @@ function Events({
                   </td>
                   <td>{event.type}</td>
                   <td>{event.result || '—'}</td>
+                  <td>{eventDetail(event) || '—'}</td>
                   <td>
                     <span
                       className={`badge ${event.valid ? 'good' : 'danger'}`}
@@ -2101,10 +2254,11 @@ function Births({
   births: Birth[];
   animals: Animal[];
   cycles: Cycle[];
-  onAdd: (form: HTMLFormElement) => void;
+  onAdd: (form: HTMLFormElement) => Promise<void>;
   onCreateCalf: (birth: Birth) => void;
 }) {
   const mothers = animals.filter((animal) => animal.sex === 'Hembra');
+  const [condition, setCondition] = useState<Birth['condition'] | ''>('');
   return (
     <>
       <section className="section-head">
@@ -2116,9 +2270,10 @@ function Births({
       </section>
       <form
         className="entry-form"
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
-          onAdd(e.currentTarget);
+          await onAdd(e.currentTarget);
+          setCondition('');
         }}
       >
         <Select
@@ -2150,17 +2305,40 @@ function Births({
           options={['Hembra', 'Macho']}
           placeholder="Selecciona el sexo"
           defaultValue=""
-          required
+          required={condition === 'Vivo'}
         />
         <Select
           label="Condición"
           name="condition"
           options={['Vivo', 'Muerto', 'Débil']}
           placeholder="Selecciona la condición"
-          defaultValue=""
+          value={condition}
+          onChange={(event) =>
+            setCondition(event.target.value as Birth['condition'])
+          }
           required
         />
+        <Input
+          label="ID visible de la cría"
+          name="calfDisplayId"
+          placeholder="Opcional. Si se omite, se genera."
+          disabled={condition !== 'Vivo'}
+        />
+        <Input
+          label="Peso al nacer (kg)"
+          name="calfWeightKg"
+          type="number"
+          min="0.1"
+          step="0.1"
+          disabled={condition !== 'Vivo'}
+        />
         <Input label="Asistencia" name="assistance" />
+        <Input
+          label="Observaciones de la cría"
+          name="calfNotes"
+          disabled={condition !== 'Vivo'}
+        />
+        <Input label="Observaciones de la madre" name="motherNotes" />
         <button className="primary form-submit">Registrar parto</button>
       </form>
       <section className="panel table-panel">
@@ -2208,9 +2386,17 @@ function Births({
                     </td>
                     <td>
                       {birth.calfId ? (
-                        <span className="badge neutral">
-                          {calf?.displayId ?? 'Creada'}
-                        </span>
+                        <>
+                          <span className="badge neutral">
+                            {calf?.displayId ?? birth.calfDisplayId ?? 'Creada'}
+                          </span>
+                          <small>
+                            {birth.condition}
+                            {birth.calfWeightKg
+                              ? ` · ${birth.calfWeightKg} kg`
+                              : ''}
+                          </small>
+                        </>
                       ) : birth.valid && birth.condition === 'Vivo' ? (
                         <button
                           className="quiet"

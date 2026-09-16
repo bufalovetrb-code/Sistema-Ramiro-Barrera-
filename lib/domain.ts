@@ -22,6 +22,22 @@ export type EventType =
   | 'Resolución de revisión'
   | 'Otro';
 export type EventResult = 'Gestante' | 'Vacía' | 'Dudosa' | 'No evaluable' | '';
+export type ServiceMethod =
+  | 'Inseminación artificial'
+  | 'Monta natural'
+  | 'Transferencia de embrión'
+  | 'Otro';
+export type DiagnosisMethod =
+  | 'Palpación'
+  | 'Ecografía'
+  | 'Prueba de laboratorio'
+  | 'Otro';
+export type AbortionCause =
+  | 'Desconocida'
+  | 'Enfermedad'
+  | 'Trauma'
+  | 'Nutricional'
+  | 'Otra';
 
 export interface Animal {
   id: string;
@@ -56,6 +72,12 @@ export interface ReproductiveEvent {
   result: EventResult;
   serviceDate?: string;
   diagnosisDate?: string;
+  serviceMethod?: ServiceMethod;
+  serviceReference?: string;
+  responsible?: string;
+  diagnosisMethod?: DiagnosisMethod;
+  abortionCause?: AbortionCause;
+  abortionStage?: string;
   notes?: string;
   valid: boolean;
   validationIssues: string[];
@@ -70,6 +92,10 @@ export interface Birth {
   sex?: Sex;
   condition?: 'Vivo' | 'Muerto' | 'Débil';
   assistance?: string;
+  calfDisplayId?: string;
+  calfWeightKg?: number;
+  calfNotes?: string;
+  motherNotes?: string;
   valid: boolean;
   needsReview: boolean;
   validationIssues: string[];
@@ -137,6 +163,7 @@ const byTime = <T extends { occurredAt?: string; createdAt?: string }>(
 export interface EventValidationContext {
   previousEvents?: ReproductiveEvent[];
   hasOpenReview?: boolean;
+  cycleStatus?: CycleStatus;
   today?: string;
 }
 
@@ -149,13 +176,31 @@ export function validateEvent(
   if (!event.occurredAt || !event.type)
     issues.push('Falta fecha/hora o tipo de evento.');
   if (!animal) issues.push('El animal no existe.');
+  if (
+    animal &&
+    ['Servicio', 'Diagnóstico', 'Aborto', 'Revisión posparto'].includes(
+      event.type,
+    ) &&
+    animal.sex !== 'Hembra'
+  )
+    issues.push(
+      'Este evento reproductivo solo puede registrarse para una hembra.',
+    );
   if (animal && day(event.occurredAt) < day(animal.birthDate))
     issues.push('El evento es anterior al nacimiento del animal.');
   if (context.today && event.occurredAt.slice(0, 10) > context.today)
     issues.push('El evento no puede registrarse en una fecha futura.');
   if (event.type === 'Diagnóstico' && !event.result)
     issues.push('Un diagnóstico requiere resultado.');
+  if (event.type === 'Servicio' && !event.serviceMethod)
+    issues.push('Un servicio requiere el método utilizado.');
+  if (event.type === 'Servicio' && context.cycleStatus === 'Gestación activa')
+    issues.push(
+      'No se puede registrar un servicio durante una gestación activa.',
+    );
   if (event.type === 'Diagnóstico') {
+    if (!event.diagnosisMethod)
+      issues.push('Un diagnóstico requiere el método utilizado.');
     if (!event.serviceDate)
       issues.push('Un diagnóstico requiere la fecha del servicio previo.');
     if (event.serviceDate && event.serviceDate > event.occurredAt.slice(0, 10))
@@ -170,6 +215,12 @@ export function validateEvent(
       )
     )
       issues.push('Diagnóstico sin servicio previo registrado.');
+  }
+  if (event.type === 'Aborto') {
+    if (context.cycleStatus !== 'Gestación activa')
+      issues.push('Aborto sin gestación activa.');
+    if (!event.abortionCause)
+      issues.push('Un aborto requiere registrar su causa.');
   }
   if (
     event.diagnosisDate &&
@@ -191,7 +242,10 @@ export function validateEvent(
 }
 
 export function validateBirth(
-  birth: Pick<Birth, 'motherId' | 'occurredAt' | 'condition' | 'sex'> & {
+  birth: Pick<
+    Birth,
+    'motherId' | 'occurredAt' | 'condition' | 'sex' | 'calfWeightKg'
+  > & {
     type?: Birth['type'];
   },
   mother: Animal | undefined,
@@ -217,6 +271,8 @@ export function validateBirth(
   if (!birth.condition) issues.push('La condición de la cría es obligatoria.');
   if (birth.condition === 'Vivo' && !birth.sex)
     issues.push('Una cría viva requiere registrar su sexo.');
+  if (birth.calfWeightKg !== undefined && birth.calfWeightKg <= 0)
+    issues.push('El peso al nacer debe ser mayor que cero.');
   if (!activeCycle || activeCycle.status !== 'Gestación activa')
     issues.push('Parto sin gestación activa.');
   if (
