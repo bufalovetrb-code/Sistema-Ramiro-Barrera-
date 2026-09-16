@@ -6,6 +6,7 @@ import {
   CalendarDays,
   ChevronRight,
   ClipboardPlus,
+  BarChart3,
   Beef,
   FileSearch,
   Funnel,
@@ -33,6 +34,7 @@ import {
 } from '@/lib/domain';
 import { LocalFarmRepository, type FarmData } from '@/lib/repository';
 import { reproductiveAgenda, type AgendaItem } from '@/lib/agenda';
+import { reproductiveReport, type ReportFilters } from '@/lib/reports';
 
 type View =
   | 'Resumen'
@@ -40,6 +42,7 @@ type View =
   | 'Eventos'
   | 'Ciclos'
   | 'Agenda'
+  | 'Indicadores'
   | 'Partos'
   | 'Auditoría'
   | 'Configuración';
@@ -730,6 +733,7 @@ export default function Home() {
     { icon: <ClipboardPlus />, label: 'Eventos' },
     { icon: <CalendarDays />, label: 'Ciclos' },
     { icon: <ListTodo />, label: 'Agenda' },
+    { icon: <BarChart3 />, label: 'Indicadores' },
     {
       icon: (
         <span className="nav-animal-icon" aria-hidden="true">
@@ -870,6 +874,13 @@ export default function Home() {
             )}
             {view === 'Agenda' && (
               <Agenda items={agenda} onNavigate={setView} />
+            )}
+            {view === 'Indicadores' && (
+              <Indicators
+                animals={data.animals}
+                events={data.events}
+                births={data.births}
+              />
             )}
             {view === 'Partos' && (
               <Births
@@ -1160,6 +1171,147 @@ function Agenda({
             </article>
           ))
         )}
+      </section>
+    </>
+  );
+}
+
+function Indicators({
+  animals,
+  events,
+  births,
+}: {
+  animals: Animal[];
+  events: ReproductiveEvent[];
+  births: Birth[];
+}) {
+  const [filters, setFilters] = useState<ReportFilters>({ species: 'Todas' });
+  const report = useMemo(
+    () =>
+      reproductiveReport(
+        animals,
+        events,
+        births,
+        filters,
+        new Date().toISOString().slice(0, 10),
+      ),
+    [animals, births, events, filters],
+  );
+  const number = (value?: number, suffix = '') =>
+    value === undefined ? 'Sin datos' : `${value}${suffix}`;
+  const reset = () => setFilters({ species: 'Todas' });
+  const setFilter = <K extends keyof ReportFilters>(
+    key: K,
+    value: ReportFilters[K],
+  ) => setFilters((current) => ({ ...current, [key]: value || undefined }));
+  return (
+    <>
+      <section className="section-head">
+        <div>
+          <p className="eyebrow">Análisis reproductivo</p>
+          <h2>Indicadores y reportes</h2>
+          <p>
+            Resultados calculados a partir de los registros locales validados.
+          </p>
+        </div>
+      </section>
+      <section className="panel report-filters" aria-label="Filtros de indicadores">
+        <div className="panel-head">
+          <div>
+            <h3>Período a consultar</h3>
+            <p>Deja las fechas vacías para revisar todo el historial.</p>
+          </div>
+          <button className="quiet" onClick={reset}>
+            Limpiar filtros
+          </button>
+        </div>
+        <div className="report-filter-fields">
+          <Input
+            label="Desde"
+            name="reportFrom"
+            type="date"
+            value={filters.from ?? ''}
+            onChange={(event) => setFilter('from', event.target.value)}
+          />
+          <Input
+            label="Hasta"
+            name="reportTo"
+            type="date"
+            value={filters.to ?? ''}
+            onChange={(event) => setFilter('to', event.target.value)}
+          />
+          <Select
+            label="Especie"
+            name="reportSpecies"
+            options={['Todas', 'Bovino', 'Búfalo']}
+            value={filters.species}
+            onChange={(event) =>
+              setFilter(
+                'species',
+                event.target.value as ReportFilters['species'],
+              )
+            }
+            required
+          />
+        </div>
+      </section>
+      <section className="report-summary" aria-live="polite">
+        <p>
+          <strong>{report.animalsIncluded}</strong> animales incluidos ·{' '}
+          <strong>{report.conclusiveDiagnoses}</strong> diagnósticos concluyentes
+        </p>
+      </section>
+      <section className="report-grid">
+        <article className="panel report-card good">
+          <span>Tasa de preñez</span>
+          <strong>{number(report.pregnancyRate, '%')}</strong>
+          <small>
+            {report.positiveDiagnoses} diagnóstico(s) gestantes de{' '}
+            {report.conclusiveDiagnoses} concluyentes.
+          </small>
+        </article>
+        <article className="panel report-card blue">
+          <span>Servicios por concepción</span>
+          <strong>{number(report.servicesPerConception)}</strong>
+          <small>
+            {report.validServices} servicios válidos por cada diagnóstico
+            gestante.
+          </small>
+        </article>
+        <article className="panel report-card purple">
+          <span>Partos validados</span>
+          <strong>{report.validatedBirths}</strong>
+          <small>Partos registrados dentro del período consultado.</small>
+        </article>
+        <article className="panel report-card danger">
+          <span>Abortos validados</span>
+          <strong>{report.validatedAbortions}</strong>
+          <small>Abortos con causa y gestación activa confirmadas.</small>
+        </article>
+        <article className="panel report-card warning">
+          <span>Promedio de días abiertos</span>
+          <strong>{number(report.averageOpenDays, ' días')}</strong>
+          <small>
+            Desde cada parto hasta el siguiente servicio, o hasta hoy si falta
+            servicio.
+          </small>
+        </article>
+        <article className="panel report-card neutral">
+          <span>Promedio entre partos</span>
+          <strong>{number(report.averageBirthIntervalDays, ' días')}</strong>
+          <small>
+            Días entre dos partos validados de la misma madre.
+          </small>
+        </article>
+      </section>
+      <section className="panel report-definition">
+        <h3>Cómo leer estos indicadores</h3>
+        <p>
+          La tasa de preñez compara los diagnósticos “Gestante” con los
+          diagnósticos concluyentes “Gestante” y “Vacía”. Los servicios por
+          concepción dividen los servicios válidos del período entre los
+          diagnósticos gestantes del mismo período.
+        </p>
       </section>
     </>
   );
