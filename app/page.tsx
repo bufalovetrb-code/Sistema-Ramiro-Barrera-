@@ -15,6 +15,8 @@ import {
   ListTodo,
   Menu,
   Plus,
+  Printer,
+  Search,
   Settings2,
   X,
 } from 'lucide-react';
@@ -85,6 +87,15 @@ const empty: FarmData = {
 const fmt = new Intl.DateTimeFormat('es-CO', { dateStyle: 'medium' });
 const date = (value?: string) =>
   value ? fmt.format(new Date(`${value.slice(0, 10)}T12:00:00`)) : '—';
+const requestPrint = (target: 'report' | 'technical-sheet') => {
+  if (typeof window.print !== 'function') return;
+  const clearTarget = () => {
+    delete document.body.dataset.printTarget;
+  };
+  document.body.dataset.printTarget = target;
+  window.addEventListener('afterprint', clearTarget, { once: true });
+  window.print();
+};
 const eventDetail = (event: ReproductiveEvent) => {
   if (event.type === 'Servicio')
     return [
@@ -1470,7 +1481,7 @@ function Indicators({
     value: ReportFilters[K],
   ) => setFilters((current) => ({ ...current, [key]: value || undefined }));
   return (
-    <>
+    <section id="print-report" className="report-page">
       <section className="section-head">
         <div>
           <p className="eyebrow">Análisis reproductivo</p>
@@ -1479,6 +1490,9 @@ function Indicators({
             Resultados calculados a partir de los registros locales validados.
           </p>
         </div>
+        <button className="quiet print-button" onClick={() => requestPrint('report')}>
+          <Printer /> Imprimir reporte
+        </button>
       </section>
       <section className="panel report-filters" aria-label="Filtros de indicadores">
         <div className="panel-head">
@@ -1578,7 +1592,7 @@ function Indicators({
           diagnósticos gestantes del mismo período.
         </p>
       </section>
-    </>
+    </section>
   );
 }
 function Animals({
@@ -1618,6 +1632,7 @@ function Animals({
   const [reproductiveFilter, setReproductiveFilter] = useState<
     'Todos' | CycleStatus
   >('Todos');
+  const [searchQuery, setSearchQuery] = useState('');
   const visibleAnimals = animals.filter((animal) => !animal.deletedAt);
   const state = (animal: Animal) => {
     const cycle = cycles.filter((item) => item.animalId === animal.id).at(-1);
@@ -1657,7 +1672,15 @@ function Animals({
       matchesCategory(animal) &&
       (speciesFilter === 'Todas' || animal.species === speciesFilter) &&
       (reproductiveFilter === 'Todos' ||
-        state(animal).label === reproductiveFilter),
+        state(animal).label === reproductiveFilter) &&
+      (searchQuery.trim() === '' ||
+        [animal.displayId, animal.rfid, animal.earTag]
+          .filter((value): value is string => Boolean(value))
+          .some((value) =>
+            value
+              .toLocaleLowerCase('es-CO')
+              .includes(searchQuery.trim().toLocaleLowerCase('es-CO')),
+          )),
   );
   const activeFilterLabel = animalListFilters.find(
     (filter) => filter.value === selectedFilter,
@@ -1757,6 +1780,16 @@ function Animals({
           </button>
         </div>
       </section>
+      <label className="animal-search">
+        <Search aria-hidden="true" />
+        <span className="visually-hidden">Buscar animal por ID, RFID o arete</span>
+        <input
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          placeholder="Buscar por ID, RFID o arete"
+          aria-label="Buscar animal por ID, RFID o arete"
+        />
+      </label>
       {filtersOpen && (
         <section
           className="panel animal-filters"
@@ -1774,6 +1807,7 @@ function Animals({
                 onFilterChange('all');
                 setSpeciesFilter('Todas');
                 setReproductiveFilter('Todos');
+                setSearchQuery('');
               }}
             >
               Limpiar filtros
@@ -1897,13 +1931,20 @@ function Animals({
           </div>
           {(selectedFilter !== 'all' ||
             speciesFilter !== 'Todas' ||
-            reproductiveFilter !== 'Todos') && (
+            reproductiveFilter !== 'Todos' ||
+            searchQuery.trim() !== '') && (
             <p>
+              {searchQuery.trim() && `Búsqueda: ${searchQuery.trim()}`}
+              {searchQuery.trim() &&
+                (selectedFilter !== 'all' ||
+                  speciesFilter !== 'Todas' ||
+                  reproductiveFilter !== 'Todos') &&
+                ' · '}
               {selectedFilter !== 'all' && activeFilterLabel}
               {speciesFilter !== 'Todas' &&
-                `${selectedFilter !== 'all' ? ' · ' : ''}${speciesFilter}`}
+                `${selectedFilter !== 'all' || searchQuery.trim() ? ' · ' : ''}${speciesFilter}`}
               {reproductiveFilter !== 'Todos' &&
-                `${selectedFilter !== 'all' || speciesFilter !== 'Todas' ? ' · ' : ''}${reproductiveFilter}`}
+                `${selectedFilter !== 'all' || speciesFilter !== 'Todas' || searchQuery.trim() ? ' · ' : ''}${reproductiveFilter}`}
             </p>
           )}
         </div>
@@ -2014,6 +2055,7 @@ function Animals({
       {technicalSheet && (
         <div className="modal-backdrop" role="presentation">
           <section
+            id="print-technical-sheet"
             className="modal-card technical-sheet"
             role="dialog"
             aria-modal="true"
@@ -2111,6 +2153,12 @@ function Animals({
               </p>
             )}
             <div className="modal-actions">
+              <button
+                className="quiet print-button"
+                onClick={() => requestPrint('technical-sheet')}
+              >
+                <Printer /> Imprimir ficha
+              </button>
               <button
                 className="quiet"
                 onClick={() => {

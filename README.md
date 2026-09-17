@@ -8,6 +8,21 @@ PWA local para gestionar animales, eventos reproductivos, ciclos, partos y alert
 2. Ejecute `pnpm dev`.
 3. Abra la dirección local que muestra la terminal.
 
+## Paquete 5: búsqueda, reportes e impresión
+
+- En **Animales**, la búsqueda local encuentra animales activos por ID visible,
+  RFID o arete. Los filtros por grupo, especie y estado reproductivo se pueden
+  combinar con esa búsqueda.
+- En **Indicadores**, el período y la especie delimitan los indicadores
+  reproductivos. El botón **Imprimir reporte** abre el diálogo de impresión del
+  navegador con el resultado que se está consultando.
+- Cada **Ficha técnica** incluye el botón **Imprimir ficha**. La impresión
+  contiene los datos de identificación, categoría, estado reproductivo,
+  ubicación, vínculo materno, crías y destete cuando esos registros existen.
+
+La impresión es local: el navegador permite elegir una impresora o guardar un
+PDF. No envía información a servicios externos.
+
 ## Abrir o instalar en Android
 
 1. Publique el build de producción detrás de una URL HTTPS confiable y accesible desde el teléfono. No active integraciones externas; para esta prueba basta el servidor HTTPS de QA autorizado por la organización.
