@@ -38,6 +38,13 @@ export type AbortionCause =
   | 'Trauma'
   | 'Nutricional'
   | 'Otra';
+export type TaskType =
+  | 'Diagnóstico'
+  | 'Palpación'
+  | 'Revisión posparto'
+  | 'Vacunación'
+  | 'Otro';
+export type TaskStatus = 'Pendiente' | 'Completada' | 'Cancelada';
 
 export interface Animal {
   id: string;
@@ -103,9 +110,21 @@ export interface Birth {
   createdAt: string;
 }
 
+export interface ReproductiveTask {
+  id: string;
+  animalId: string;
+  dueDate: string;
+  type: TaskType;
+  responsible: string;
+  notes?: string;
+  status: TaskStatus;
+  completedAt?: string;
+  createdAt: string;
+}
+
 export interface AuditEntry {
   id: string;
-  entity: 'Animal' | 'Evento' | 'Parto' | 'Configuración';
+  entity: 'Animal' | 'Evento' | 'Parto' | 'Tarea' | 'Configuración';
   entityId: string;
   action: 'Creación' | 'Edición' | 'Baja lógica' | 'Corrección';
   at: string;
@@ -165,6 +184,22 @@ export interface EventValidationContext {
   hasOpenReview?: boolean;
   cycleStatus?: CycleStatus;
   today?: string;
+}
+
+export function validateTask(
+  task: Pick<ReproductiveTask, 'animalId' | 'dueDate' | 'type' | 'responsible'>,
+  animal?: Animal,
+): string[] {
+  const issues: string[] = [];
+  if (!task.animalId || !animal) issues.push('La tarea requiere un animal activo.');
+  if (!task.dueDate) issues.push('La fecha programada es obligatoria.');
+  if (!task.type) issues.push('El tipo de tarea es obligatorio.');
+  if (!task.responsible.trim()) issues.push('La tarea requiere un responsable.');
+  return issues;
+}
+
+export function isTaskOverdue(task: ReproductiveTask, today: string) {
+  return task.status === 'Pendiente' && task.dueDate < today;
 }
 
 export function validateEvent(

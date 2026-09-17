@@ -4,6 +4,7 @@ import {
   type AuditEntry,
   type Birth,
   type ReproductiveEvent,
+  type ReproductiveTask,
   type Settings,
 } from './domain';
 
@@ -11,6 +12,7 @@ export interface FarmData {
   animals: Animal[];
   events: ReproductiveEvent[];
   births: Birth[];
+  tasks: ReproductiveTask[];
   audits: AuditEntry[];
   settings: Settings;
 }
@@ -22,6 +24,7 @@ const fresh = (): FarmData => ({
   animals: [],
   events: [],
   births: [],
+  tasks: [],
   audits: [],
   settings: { ...defaultSettings },
 });
@@ -54,6 +57,7 @@ export class LocalFarmRepository {
     if (data)
       return {
         ...data,
+        tasks: data.tasks ?? [],
         settings: { ...defaultSettings, ...data.settings },
       };
     const seeded = fresh();

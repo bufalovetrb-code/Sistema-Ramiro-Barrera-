@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   CalendarDays,
+  ClipboardCheck,
   ChevronRight,
   ClipboardPlus,
   BarChart3,
@@ -27,10 +28,13 @@ import {
   type Cycle,
   type CycleStatus,
   type ReproductiveEvent,
+  type ReproductiveTask,
   type Settings,
   uid,
+  isTaskOverdue,
   validateBirth,
   validateEvent,
+  validateTask,
 } from '@/lib/domain';
 import { LocalFarmRepository, type FarmData } from '@/lib/repository';
 import { reproductiveAgenda, type AgendaItem } from '@/lib/agenda';
@@ -42,6 +46,7 @@ type View =
   | 'Eventos'
   | 'Ciclos'
   | 'Agenda'
+  | 'Planificación'
   | 'Indicadores'
   | 'Partos'
   | 'Auditoría'
@@ -73,6 +78,7 @@ const empty: FarmData = {
   animals: [],
   events: [],
   births: [],
+  tasks: [],
   audits: [],
   settings: defaultSettings,
 };
@@ -230,17 +236,22 @@ export const restoreDataFrom = (source: unknown): FarmData | undefined => {
       .size !== animals.length;
   if (duplicateAnimal) return undefined;
   const ids = new Set(animals.map((animal) => animal.id));
+  const tasks = Array.isArray(candidate.tasks)
+    ? (candidate.tasks as ReproductiveTask[])
+    : [];
   if (
     (candidate.events as ReproductiveEvent[]).some(
       (event) => !ids.has(event.animalId),
     ) ||
-    (candidate.births as Birth[]).some((birth) => !ids.has(birth.motherId))
+    (candidate.births as Birth[]).some((birth) => !ids.has(birth.motherId)) ||
+    tasks.some((task) => !ids.has(task.animalId))
   )
     return undefined;
   return {
     animals,
     events: candidate.events as ReproductiveEvent[],
     births: candidate.births as Birth[],
+    tasks,
     audits: candidate.audits as AuditEntry[],
     settings: {
       ...defaultSettings,
@@ -301,7 +312,7 @@ export default function Home() {
       }
       if (
         !confirm(
-          `Se reemplazarán los datos actuales por ${restored.animals.length} animales, ${restored.events.length} eventos y ${restored.births.length} partos del respaldo. ¿Deseas continuar?`,
+          `Se reemplazarán los datos actuales por ${restored.animals.length} animales, ${restored.events.length} eventos, ${restored.births.length} partos y ${restored.tasks.length} tareas del respaldo. ¿Deseas continuar?`,
         )
       )
         return;
@@ -312,7 +323,7 @@ export default function Home() {
     }
   };
   const audit = (
-    entity: 'Animal' | 'Evento' | 'Parto' | 'Configuración',
+    entity: 'Animal' | 'Evento' | 'Parto' | 'Tarea' | 'Configuración',
     entityId: string,
     action: 'Creación' | 'Edición' | 'Baja lógica' | 'Corrección',
     reason?: string,
@@ -415,6 +426,65 @@ export default function Home() {
         ? 'Evento registrado.'
         : 'Evento guardado en Ciclos por revisar.',
     );
+  };
+  const addTask = async (form: HTMLFormElement) => {
+    const values = new FormData(form);
+    const animalId = formValue(values, 'animalId');
+    const task: ReproductiveTask = {
+      id: uid(),
+      animalId,
+      dueDate: formValue(values, 'dueDate'),
+      type: formValue(values, 'type') as ReproductiveTask['type'],
+      responsible: formValue(values, 'responsible').trim(),
+      notes: formValue(values, 'notes').trim() || undefined,
+      status: 'Pendiente',
+      createdAt: new Date().toISOString(),
+    };
+    const issues = validateTask(
+      task,
+      data.animals.find((animal) => animal.id === animalId && !animal.deletedAt),
+    );
+    if (issues.length > 0) {
+      setNotice(issues[0]);
+      return;
+    }
+    await persist({
+      ...data,
+      tasks: [...data.tasks, task],
+      audits: [
+        ...data.audits,
+        audit(
+          'Tarea',
+          task.id,
+          'Creación',
+          `${task.type} programada para ${task.dueDate}.`,
+        ),
+      ],
+    });
+    form.reset();
+    setNotice(`Tarea de ${task.type.toLocaleLowerCase()} programada.`);
+  };
+  const updateTaskStatus = async (
+    task: ReproductiveTask,
+    status: Extract<ReproductiveTask['status'], 'Completada' | 'Cancelada'>,
+  ) => {
+    const completedAt = status === 'Completada' ? new Date().toISOString() : undefined;
+    await persist({
+      ...data,
+      tasks: data.tasks.map((item) =>
+        item.id === task.id ? { ...item, status, completedAt } : item,
+      ),
+      audits: [
+        ...data.audits,
+        audit(
+          'Tarea',
+          task.id,
+          'Edición',
+          `${task.type} marcada como ${status.toLocaleLowerCase()}.`,
+        ),
+      ],
+    });
+    setNotice(`Tarea marcada como ${status.toLocaleLowerCase()}.`);
   };
   const addBirth = async (form: HTMLFormElement) => {
     const values = new FormData(form);
@@ -709,6 +779,7 @@ export default function Home() {
     (cycle) => cycle.status === 'Requiere revisión',
   );
   const nowDay = new Date().toISOString().slice(0, 10);
+  const overdueTasks = data.tasks.filter((task) => isTaskOverdue(task, nowDay));
   const agenda = useMemo(
     () =>
       reproductiveAgenda(
@@ -733,6 +804,7 @@ export default function Home() {
     { icon: <ClipboardPlus />, label: 'Eventos' },
     { icon: <CalendarDays />, label: 'Ciclos' },
     { icon: <ListTodo />, label: 'Agenda' },
+    { icon: <ClipboardCheck />, label: 'Planificación' },
     { icon: <BarChart3 />, label: 'Indicadores' },
     {
       icon: (
@@ -783,6 +855,9 @@ export default function Home() {
               )}
               {label === 'Agenda' && agenda.length > 0 && (
                 <em>{agenda.length}</em>
+              )}
+              {label === 'Planificación' && overdueTasks.length > 0 && (
+                <em>{overdueTasks.length}</em>
               )}
             </button>
           ))}
@@ -837,6 +912,7 @@ export default function Home() {
                 animals={activeAnimals}
                 cycles={cycles}
                 births={data.births}
+                overdueTasks={overdueTasks.length}
                 review={reviewCycles}
                 agenda={agenda}
                 settings={data.settings}
@@ -874,6 +950,15 @@ export default function Home() {
             )}
             {view === 'Agenda' && (
               <Agenda items={agenda} onNavigate={setView} />
+            )}
+            {view === 'Planificación' && (
+              <Tasks
+                tasks={data.tasks}
+                animals={activeAnimals}
+                today={nowDay}
+                onAdd={addTask}
+                onUpdateStatus={updateTaskStatus}
+              />
             )}
             {view === 'Indicadores' && (
               <Indicators
@@ -914,6 +999,7 @@ function Dashboard({
   animals,
   cycles,
   births,
+  overdueTasks,
   review,
   agenda,
   settings,
@@ -923,6 +1009,7 @@ function Dashboard({
   animals: Animal[];
   cycles: Cycle[];
   births: Birth[];
+  overdueTasks: number;
   review: Cycle[];
   agenda: AgendaItem[];
   settings: Settings;
@@ -983,6 +1070,7 @@ function Dashboard({
           'purple',
         )}
         {metric('Ciclos por revisar', review.length, 'red')}
+        {metric('Tareas vencidas', overdueTasks, 'red')}
       </section>
       <section className="panel inventory-summary">
         <div className="panel-head">
@@ -1171,6 +1259,183 @@ function Agenda({
             </article>
           ))
         )}
+      </section>
+    </>
+  );
+}
+
+function Tasks({
+  tasks,
+  animals,
+  today,
+  onAdd,
+  onUpdateStatus,
+}: {
+  tasks: ReproductiveTask[];
+  animals: Animal[];
+  today: string;
+  onAdd: (form: HTMLFormElement) => Promise<void>;
+  onUpdateStatus: (
+    task: ReproductiveTask,
+    status: Extract<ReproductiveTask['status'], 'Completada' | 'Cancelada'>,
+  ) => Promise<void>;
+}) {
+  const [filter, setFilter] = useState<
+    'Todas' | 'Pendientes' | 'Vencidas' | 'Completadas'
+  >('Todas');
+  const matchesFilter = (task: ReproductiveTask) => {
+    if (filter === 'Todas') return true;
+    if (filter === 'Vencidas') return isTaskOverdue(task, today);
+    if (filter === 'Pendientes') return task.status === 'Pendiente';
+    return task.status === 'Completada';
+  };
+  const visibleTasks = [...tasks]
+    .filter(matchesFilter)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const state = (task: ReproductiveTask) =>
+    isTaskOverdue(task, today)
+      ? { label: 'Vencida', tone: 'danger' }
+      : task.status === 'Completada'
+        ? { label: 'Completada', tone: 'good' }
+        : task.status === 'Cancelada'
+          ? { label: 'Cancelada', tone: 'neutral' }
+          : { label: 'Pendiente', tone: 'warning' };
+  return (
+    <>
+      <section className="section-head">
+        <div>
+          <p className="eyebrow">Trabajo programado</p>
+          <h2>Planificación reproductiva</h2>
+          <p>
+            Programa actividades, asigna responsables y registra su
+            cumplimiento.
+          </p>
+        </div>
+      </section>
+      <form
+        className="entry-form"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          await onAdd(event.currentTarget);
+        }}
+      >
+        <Select
+          label="Animal"
+          name="animalId"
+          options={animals.map((animal) => `${animal.id}|${animal.displayId}`)}
+          encoded
+          placeholder="Selecciona el animal"
+          defaultValue=""
+          required
+        />
+        <Select
+          label="Tarea"
+          name="type"
+          options={[
+            'Diagnóstico',
+            'Palpación',
+            'Revisión posparto',
+            'Vacunación',
+            'Otro',
+          ]}
+          placeholder="Selecciona la tarea"
+          defaultValue=""
+          required
+        />
+        <Input label="Fecha programada" name="dueDate" type="date" required />
+        <Input label="Responsable" name="responsible" required />
+        <Input label="Observaciones" name="notes" />
+        <button className="primary form-submit">Programar tarea</button>
+      </form>
+      <section className="panel task-toolbar">
+        <div>
+          <strong>{tasks.length} tarea(s) registradas</strong>
+          <small>
+            {tasks.filter((task) => isTaskOverdue(task, today)).length} vencida(s)
+          </small>
+        </div>
+        <div className="agenda-filters" aria-label="Filtrar tareas">
+          {(['Todas', 'Pendientes', 'Vencidas', 'Completadas'] as const).map(
+            (item) => (
+              <button
+                key={item}
+                className={filter === item ? 'selected' : ''}
+                onClick={() => setFilter(item)}
+              >
+                {item}
+              </button>
+            ),
+          )}
+        </div>
+      </section>
+      <section className="panel table-panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Animal</th>
+              <th>Tarea</th>
+              <th>Responsable</th>
+              <th>Estado</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleTasks.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="empty">
+                  No hay tareas para este filtro.
+                </td>
+              </tr>
+            ) : (
+              visibleTasks.map((task) => {
+                const currentState = state(task);
+                return (
+                  <tr key={task.id}>
+                    <td>{date(task.dueDate)}</td>
+                    <td>
+                      <strong>
+                        {animals.find((animal) => animal.id === task.animalId)
+                          ?.displayId ?? 'No disponible'}
+                      </strong>
+                      {task.notes && <small>{task.notes}</small>}
+                    </td>
+                    <td>{task.type}</td>
+                    <td>{task.responsible}</td>
+                    <td>
+                      <span className={`badge ${currentState.tone}`}>
+                        {currentState.label}
+                      </span>
+                      {task.completedAt && (
+                        <small>Completada: {date(task.completedAt)}</small>
+                      )}
+                    </td>
+                    <td>
+                      {task.status === 'Pendiente' ? (
+                        <div className="row-actions">
+                          <button
+                            className="quiet"
+                            onClick={() => void onUpdateStatus(task, 'Completada')}
+                          >
+                            Completar
+                          </button>
+                          <button
+                            className="text-danger"
+                            onClick={() => void onUpdateStatus(task, 'Cancelada')}
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </section>
     </>
   );
@@ -2590,6 +2855,7 @@ function Audit({
     Animal: 'Animales',
     Evento: 'Eventos',
     Parto: 'Partos',
+    Tarea: 'Planificación',
     Configuración: 'Configuración',
   };
   return (
@@ -2614,6 +2880,7 @@ function Audit({
                 'Animal',
                 'Evento',
                 'Parto',
+                'Tarea',
                 'Configuración',
               ] as AuditEntry['entity'][]
             ).map((item) => (

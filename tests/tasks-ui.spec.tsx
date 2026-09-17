@@ -25,19 +25,19 @@ vi.mock('../lib/repository', () => ({
   },
 }));
 
-describe('indicadores en interfaz', () => {
+describe('planificación en interfaz', () => {
   afterEach(cleanup);
 
-  it('muestra filtros y definiciones de indicadores reproductivos', async () => {
+  it('muestra la programación y filtros de tareas', async () => {
     render(<Home />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Indicadores' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Planificación' }),
+    );
     expect(
-      screen.getByRole('heading', { name: 'Indicadores y reportes' }),
+      screen.getByRole('heading', { name: 'Planificación reproductiva' }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText('Desde')).toBeInTheDocument();
-    expect(screen.getByLabelText('Hasta')).toBeInTheDocument();
-    expect(screen.getByLabelText('Especie')).toBeInTheDocument();
-    expect(screen.getByText('Tasa de preñez')).toBeInTheDocument();
-    expect(screen.getByText('Servicios por concepción')).toBeInTheDocument();
+    expect(screen.getByLabelText('Fecha programada')).toBeInTheDocument();
+    expect(screen.getByLabelText('Responsable')).toBeInTheDocument();
+    expect(screen.getByLabelText('Filtrar tareas')).toBeInTheDocument();
   });
 });

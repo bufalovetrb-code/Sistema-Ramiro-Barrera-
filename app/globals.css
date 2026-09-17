@@ -1154,7 +1154,8 @@ h1 {
   font-size: 12px;
 }
 .agenda-toolbar,
-.agenda-card {
+.agenda-card,
+.task-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1163,9 +1164,24 @@ h1 {
 .agenda-toolbar {
   margin-bottom: 16px;
 }
+.task-toolbar {
+  margin: 18px 0 14px;
+}
 .agenda-toolbar strong {
   display: block;
   font-size: 17px;
+}
+.task-toolbar strong,
+.task-toolbar small {
+  display: block;
+}
+.task-toolbar strong {
+  font-size: 17px;
+}
+.task-toolbar small {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
 }
 .agenda-filters {
   display: flex;
@@ -1348,7 +1364,8 @@ h1 {
     text-align: left;
   }
   .agenda-toolbar,
-  .agenda-card {
+  .agenda-card,
+  .task-toolbar {
     align-items: stretch;
     flex-direction: column;
   }

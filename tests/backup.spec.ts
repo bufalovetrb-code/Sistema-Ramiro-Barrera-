@@ -31,6 +31,7 @@ describe('respaldo local', () => {
     expect(restored?.animals).toHaveLength(1);
     expect(restored?.settings.farmName).toBe('Miraflores');
     expect(restored?.settings.localUser).toBe('Usuario local');
+    expect(restored?.tasks).toEqual([]);
   });
   it('rechaza animales duplicados o eventos sin animal vinculado', () => {
     expect(
