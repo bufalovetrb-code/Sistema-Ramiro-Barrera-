@@ -49,4 +49,10 @@ PDF. No envía información a servicios externos.
 
 ## Alcance actual
 
-No hay sincronización remota, usuarios autenticados ni integraciones externas. La capa de repositorio está preparada para sustituir IndexedDB por una API futura.
+La aplicación conserva una copia de trabajo local en IndexedDB para poder operar sin conexión y ofrece respaldo descargable en formato JSON. Los respaldos locales siguen siendo obligatorios.
+
+También cuenta con sincronización manual con Supabase para una finca seleccionada. La sincronización registra los cambios compatibles, descarga la versión remota y conserva la versión remota cuando detecta un conflicto para evitar sobrescribir información.
+
+Los usuarios acceden mediante Supabase Auth. Una finca puede compartirse con los roles **propietario**, **administrador**, **operador** y **solo lectura**. Los roles de propietario, administrador y operador pueden registrar información; solo lectura puede consultar sin modificarla.
+
+Para publicar una versión con sincronización remota se requieren las variables de entorno `VITE_SUPABASE_URL` y `VITE_SUPABASE_PUBLISHABLE_KEY`. Nunca incorpore claves de servicio ni contraseñas al repositorio.

@@ -108,6 +108,8 @@ export interface Birth {
   validationIssues: string[];
   calfId?: string;
   createdAt: string;
+  /** Changes such as linking a confirmed calf must participate in remote conflict control. */
+  updatedAt?: string;
 }
 
 export interface ReproductiveTask {
@@ -135,6 +137,10 @@ export interface AuditEntry {
 export interface Settings {
   farmName: string;
   localUser: string;
+  /** Metadata only. The backup file itself remains the recovery source. */
+  lastBackupDownloadedAt?: string;
+  /** Last time a backup was restored in this browser. */
+  lastBackupRestoredAt?: string;
   bovineGestationDays: number;
   buffaloGestationDays: number;
   upcomingBirthDays: number;
@@ -142,6 +148,14 @@ export interface Settings {
   earlyBirthToleranceDays: number;
   minimumBreedingAgeMonths: number;
   animalRemovalCodeHash?: string;
+  remoteFarmId?: string;
+  remoteLastSyncedAt?: string;
+  /** Last successful download from the selected shared farm. */
+  remoteLastPulledAt?: string;
+  /** Version last downloaded for each shared record; never shown as farm data. */
+  remoteRecordVersions?: Record<string, number>;
+  /** Timestamp of the shared configuration record. */
+  updatedAt?: string;
 }
 
 export interface Cycle {

@@ -41,6 +41,22 @@ import {
 import { LocalFarmRepository, type FarmData } from '@/lib/repository';
 import { reproductiveAgenda, type AgendaItem } from '@/lib/agenda';
 import { reproductiveReport, type ReportFilters } from '@/lib/reports';
+import { getSupabase, isSupabaseConfigured } from '@/lib/supabase';
+import {
+  acceptRemoteInvitation,
+  inviteRemoteMember,
+  listRemoteFarms,
+  listRemoteInvitations,
+  listRemoteMembers,
+  pullRemoteFarm,
+  removeRemoteMember,
+  syncFarmData,
+  updateRemoteMemberRole,
+  type FarmRole,
+  type RemoteFarm,
+  type RemoteInvitation,
+  type RemoteMember,
+} from '@/lib/remote-sync';
 
 type View =
   | 'Resumen'
@@ -87,6 +103,53 @@ const empty: FarmData = {
 const fmt = new Intl.DateTimeFormat('es-CO', { dateStyle: 'medium' });
 const date = (value?: string) =>
   value ? fmt.format(new Date(`${value.slice(0, 10)}T12:00:00`)) : '—';
+export const backupFileName = (farmName: string, exportedAt: string) => {
+  const safeFarm = farmName
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+  return `rb-smartfarm-respaldo-${exportedAt.slice(0, 10)}-${safeFarm || 'finca'}.json`;
+};
+export const backupStatusFor = (settings: Settings, now = new Date()) => {
+  const today = now.toISOString().slice(0, 10);
+  const last = settings.lastBackupDownloadedAt;
+  if (!last)
+    return {
+      due: true,
+      label: 'Respaldo pendiente',
+      detail: 'Aún no hay una descarga registrada en este dispositivo.',
+    };
+  if (last.slice(0, 10) !== today)
+    return {
+      due: true,
+      label: 'Respaldo de hoy pendiente',
+      detail: `La última descarga registrada fue el ${date(last)}.`,
+    };
+  return {
+    due: false,
+    label: 'Respaldo de hoy descargado',
+    detail: `Última descarga registrada: ${date(last)}.`,
+  };
+};
+export const backupCountsFor = (data: FarmData) => ({
+  animals: data.animals.length,
+  events: data.events.length,
+  births: data.births.length,
+  tasks: data.tasks.length,
+});
+type BackupWritableFile = {
+  write: (data: Blob) => Promise<void>;
+  close: () => Promise<void>;
+};
+type BackupFileHandle = {
+  createWritable: () => Promise<BackupWritableFile>;
+};
+type BackupSavePicker = (options: {
+  suggestedName: string;
+  types: { description: string; accept: Record<string, string[]> }[];
+}) => Promise<BackupFileHandle>;
 const requestPrint = (target: 'report' | 'technical-sheet') => {
   if (typeof window.print !== 'function') return;
   const clearTarget = () => {
@@ -278,6 +341,11 @@ export default function Home() {
   const [animalFilter, setAnimalFilter] = useState<AnimalListFilter>('all');
   const [mobileNav, setMobileNav] = useState(false);
   const [notice, setNotice] = useState('');
+  const [remoteUserEmail, setRemoteUserEmail] = useState<string>();
+  const [remotePasswordRecovery, setRemotePasswordRecovery] = useState(false);
+  const [remoteFarms, setRemoteFarms] = useState<RemoteFarm[]>([]);
+  const [remoteInvitations, setRemoteInvitations] = useState<RemoteInvitation[]>([]);
+  const [remoteMembers, setRemoteMembers] = useState<RemoteMember[]>([]);
   const repo = useMemo(() => new LocalFarmRepository(), []);
   const cycles = useMemo(
     () => cyclesFor(data.animals, data.events, data.births, data.settings),
@@ -292,27 +360,126 @@ export default function Home() {
       })
       .catch(() => setNotice('No se pudo abrir el almacenamiento local.'));
   }, [repo]);
+  const refreshRemoteWorkspace = async (farmId = data.settings.remoteFarmId) => {
+    if (!isSupabaseConfigured || !remoteUserEmail) return;
+    const [farms, invitations] = await Promise.all([
+      listRemoteFarms(),
+      listRemoteInvitations(),
+    ]);
+    setRemoteFarms(farms);
+    setRemoteInvitations(invitations);
+    const selected = farms.find((farm) => farm.id === farmId);
+    if (selected?.role === 'owner') setRemoteMembers(await listRemoteMembers(selected.id));
+    else setRemoteMembers([]);
+  };
+  const refreshRemoteUser = async () => {
+    if (!isSupabaseConfigured) return;
+    const { data: auth } = await getSupabase().auth.getUser();
+    setRemoteUserEmail(auth.user?.email);
+  };
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    const authHash = new URLSearchParams(window.location.hash.slice(1));
+    const recoveryType = authHash.get('type');
+    if (authHash.get('error_code') === 'otp_expired') {
+      setNotice(
+        'El enlace de acceso ya fue utilizado o expiró. Solicita un enlace nuevo para definir tu contraseña.',
+      );
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+    // Password reset links return to the root of the PWA.  The form lives in
+    // Configuración, so take the person there automatically instead of
+    // leaving them on the dashboard with no visible next step.
+    if (recoveryType === 'recovery' || recoveryType === 'invite') {
+      setRemotePasswordRecovery(true);
+      setView('Configuración');
+    }
+    const {
+      data: { subscription },
+    } = getSupabase().auth.onAuthStateChange((event, session) => {
+      setRemoteUserEmail(session?.user.email);
+      if (event === 'PASSWORD_RECOVERY') {
+        setRemotePasswordRecovery(true);
+        setView('Configuración');
+      }
+    });
+    void refreshRemoteUser();
+    return () => subscription.unsubscribe();
+  }, []);
+  useEffect(() => {
+    if (!remoteUserEmail) {
+      setRemoteFarms([]);
+      setRemoteInvitations([]);
+      setRemoteMembers([]);
+      return;
+    }
+    void refreshRemoteWorkspace().catch(() => {
+      // The session remains usable even if the shared-workspace list is unavailable.
+    });
+  }, [remoteUserEmail, data.settings.remoteFarmId]);
   const persist = async (next: FarmData) => {
     setData(next);
     await repo.save(next);
   };
-  const exportBackup = () => {
+  const exportBackup = async () => {
     const exportedAt = new Date().toISOString();
+    const backupData = {
+      ...data,
+      settings: { ...data.settings, lastBackupDownloadedAt: exportedAt },
+    };
     const backup = {
       format: 'RB SmartFarm respaldo local',
       version: 1,
       exportedAt,
-      data,
+      farmName: backupData.settings.farmName,
+      recordCounts: backupCountsFor(backupData),
+      data: backupData,
     };
     const file = new Blob([JSON.stringify(backup, null, 2)], {
       type: 'application/json',
     });
+    const filename = backupFileName(backupData.settings.farmName, exportedAt);
+    const savePicker = (window as Window & { showSaveFilePicker?: BackupSavePicker })
+      .showSaveFilePicker;
+    if (savePicker) {
+      try {
+        const handle = await savePicker({
+          suggestedName: filename,
+          types: [
+            {
+              description: 'Respaldo RB SmartFarm',
+              accept: { 'application/json': ['.json'] },
+            },
+          ],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(file);
+        await writable.close();
+        await persist(backupData);
+        setNotice('Respaldo guardado. Conserva una segunda copia en una ubicación diferente.');
+        return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          setNotice('Guardado de respaldo cancelado. Los datos locales no cambiaron.');
+          return;
+        }
+      }
+    }
     const link = document.createElement('a');
-    link.href = URL.createObjectURL(file);
-    link.download = `rb-smartfarm-respaldo-${exportedAt.slice(0, 10)}.json`;
+    const objectUrl = URL.createObjectURL(file);
+    link.href = objectUrl;
+    link.download = filename;
+    link.style.display = 'none';
+    document.body.appendChild(link);
     link.click();
-    URL.revokeObjectURL(link.href);
-    setNotice('Respaldo descargado. Guárdalo en un lugar seguro.');
+    link.remove();
+    // The integrated browser may start the download asynchronously. Releasing
+    // the Blob URL immediately cancels that handoff and leaves it as "Detenida".
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    await persist(backupData);
+    setNotice(
+      'Respaldo descargado. Ahora guarda una copia fuera de Descargas y una segunda copia en la ubicación remota aprobada.',
+    );
   };
   const restoreBackup = async (file: File) => {
     try {
@@ -323,11 +490,17 @@ export default function Home() {
       }
       if (
         !confirm(
-          `Se reemplazarán los datos actuales por ${restored.animals.length} animales, ${restored.events.length} eventos, ${restored.births.length} partos y ${restored.tasks.length} tareas del respaldo. ¿Deseas continuar?`,
+          `Se reemplazarán los datos actuales (${data.animals.length} animales, ${data.events.length} eventos, ${data.births.length} partos y ${data.tasks.length} tareas) por el respaldo (${restored.animals.length} animales, ${restored.events.length} eventos, ${restored.births.length} partos y ${restored.tasks.length} tareas). ¿Deseas continuar?`,
         )
       )
         return;
-      await persist(restored);
+      await persist({
+        ...restored,
+        settings: {
+          ...restored.settings,
+          lastBackupRestoredAt: new Date().toISOString(),
+        },
+      });
       setNotice('Respaldo restaurado correctamente en este dispositivo.');
     } catch {
       setNotice('No fue posible leer este archivo de respaldo.');
@@ -347,7 +520,16 @@ export default function Home() {
     localUser: data.settings.localUser.trim() || 'Usuario local',
     reason,
   });
+  const canEditSelectedFarm = () => {
+    const selected = remoteFarms.find(
+      (farm) => farm.id === data.settings.remoteFarmId,
+    );
+    if (selected?.role !== 'viewer') return true;
+    setNotice('Tu rol es Solo lectura. No puedes modificar esta finca compartida.');
+    return false;
+  };
   const addAnimal = async (form: HTMLFormElement) => {
+    if (!canEditSelectedFarm()) return;
     const values = new FormData(form);
     const now = new Date().toISOString();
     const animal: Animal = {
@@ -384,6 +566,7 @@ export default function Home() {
     setNotice(`Animal ${animal.displayId} creado.`);
   };
   const addEvent = async (form: HTMLFormElement) => {
+    if (!canEditSelectedFarm()) return;
     const values = new FormData(form);
     const animalId = formValue(values, 'animalId');
     const animal = data.animals.find((item) => item.id === animalId);
@@ -439,6 +622,7 @@ export default function Home() {
     );
   };
   const addTask = async (form: HTMLFormElement) => {
+    if (!canEditSelectedFarm()) return;
     const values = new FormData(form);
     const animalId = formValue(values, 'animalId');
     const task: ReproductiveTask = {
@@ -479,6 +663,7 @@ export default function Home() {
     task: ReproductiveTask,
     status: Extract<ReproductiveTask['status'], 'Completada' | 'Cancelada'>,
   ) => {
+    if (!canEditSelectedFarm()) return;
     const completedAt = status === 'Completada' ? new Date().toISOString() : undefined;
     await persist({
       ...data,
@@ -498,6 +683,7 @@ export default function Home() {
     setNotice(`Tarea marcada como ${status.toLocaleLowerCase()}.`);
   };
   const addBirth = async (form: HTMLFormElement) => {
+    if (!canEditSelectedFarm()) return;
     const values = new FormData(form);
     const motherId = formValue(values, 'motherId');
     const mother = data.animals.find((animal) => animal.id === motherId);
@@ -572,6 +758,7 @@ export default function Home() {
       validationIssues: issues,
       calfId: calf?.id,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
     await persist({
       ...data,
@@ -613,6 +800,7 @@ export default function Home() {
     );
   };
   const createCalf = async (birth: Birth) => {
+    if (!canEditSelectedFarm()) return;
     if (birth.calfId || !birth.valid) return;
     const mother = data.animals.find((item) => item.id === birth.motherId);
     if (!mother) return;
@@ -638,7 +826,9 @@ export default function Home() {
       ...data,
       animals: [...data.animals, calf],
       births: data.births.map((item) =>
-        item.id === birth.id ? { ...item, calfId: calf.id } : item,
+        item.id === birth.id
+          ? { ...item, calfId: calf.id, updatedAt: now }
+          : item,
       ),
       audits: [
         ...data.audits,
@@ -654,6 +844,7 @@ export default function Home() {
     setNotice(`Cría ${calf.displayId} creada.`);
   };
   const registerWeaning = async (animal: Animal, form: HTMLFormElement) => {
+    if (!canEditSelectedFarm()) return false;
     const values = new FormData(form);
     const weanedAt = formValue(values, 'weanedAt');
     const weightText = formValue(values, 'weaningWeightKg');
@@ -691,6 +882,7 @@ export default function Home() {
     return true;
   };
   const retireAnimal = async (animal: Animal, passcode: string) => {
+    if (!canEditSelectedFarm()) return false;
     if (!data.settings.animalRemovalCodeHash) {
       setNotice('Primero configura la clave de eliminación en Configuración.');
       return false;
@@ -729,6 +921,7 @@ export default function Home() {
     return true;
   };
   const saveSettings = async (form: HTMLFormElement) => {
+    if (!canEditSelectedFarm()) return;
     const vals = new FormData(form);
     const settings = {
       ...data.settings,
@@ -738,6 +931,7 @@ export default function Home() {
       ...Object.fromEntries(
         numericSettingKeys.map((key) => [key, Number(vals.get(key))]),
       ),
+      updatedAt: new Date().toISOString(),
     } as Settings;
     await persist({
       ...data,
@@ -784,6 +978,166 @@ export default function Home() {
     });
     form.reset();
     setNotice('Clave de eliminación guardada en este dispositivo.');
+  };
+  const signInRemote = async (form: HTMLFormElement) => {
+    const values = new FormData(form);
+    const { error } = await getSupabase().auth.signInWithPassword({
+      email: formValue(values, 'remoteEmail').trim(),
+      password: formValue(values, 'remotePassword'),
+    });
+    if (error) {
+      setNotice(`No fue posible iniciar sesión: ${error.message}`);
+      return;
+    }
+    await refreshRemoteUser();
+    await refreshRemoteWorkspace();
+    form.reset();
+    setNotice('Sesión remota iniciada. Selecciona una finca compartida o sincroniza la finca local.');
+  };
+  const signUpRemote = async (form: HTMLFormElement) => {
+    const values = new FormData(form);
+    const { error } = await getSupabase().auth.signUp({
+      email: formValue(values, 'remoteEmail').trim(),
+      password: formValue(values, 'remotePassword'),
+    });
+    if (error) {
+      setNotice(`No fue posible crear la cuenta piloto: ${error.message}`);
+      return;
+    }
+    form.reset();
+    setNotice('Cuenta piloto solicitada. La contraseña es la que escribiste en este formulario; no se genera ni se muestra después. Revisa el correo de confirmación antes de iniciar sesión.');
+  };
+  const requestRemotePasswordReset = async (form: HTMLFormElement) => {
+    const values = new FormData(form);
+    const { error } = await getSupabase().auth.resetPasswordForEmail(
+      formValue(values, 'remoteEmail').trim(),
+      { redirectTo: window.location.origin },
+    );
+    if (error) {
+      setNotice(`No fue posible solicitar el cambio de contraseña: ${error.message}`);
+      return;
+    }
+    form.reset();
+    setNotice('Si el correo tiene una cuenta piloto, recibirás un enlace para definir una nueva contraseña.');
+  };
+  const updateRemotePassword = async (form: HTMLFormElement) => {
+    const values = new FormData(form);
+    const password = formValue(values, 'remotePassword');
+    if (password !== formValue(values, 'remotePasswordConfirmation')) {
+      setNotice('Las contraseñas no coinciden.');
+      return;
+    }
+    const { error } = await getSupabase().auth.updateUser({ password });
+    if (error) {
+      setNotice(`No fue posible actualizar la contraseña: ${error.message}`);
+      return;
+    }
+    form.reset();
+    setRemotePasswordRecovery(false);
+    setNotice('Contraseña actualizada. Guárdala en un lugar seguro para futuros inicios de sesión.');
+  };
+  const signOutRemote = async () => {
+    await getSupabase().auth.signOut();
+    setRemoteUserEmail(undefined);
+    setRemoteFarms([]);
+    setRemoteInvitations([]);
+    setRemoteMembers([]);
+    setNotice('Sesión remota cerrada en este dispositivo.');
+  };
+  const selectRemoteFarm = async (farmId: string) => {
+    const remote = remoteFarms.find((farm) => farm.id === farmId);
+    if (!remote) return;
+    if (
+      !confirm(
+        `Se descargará ${remote.name} y reemplazará la vista local actual de este dispositivo. Antes de continuar, confirma que tienes respaldo de cualquier trabajo local pendiente. ¿Deseas abrir esta finca?`,
+      )
+    )
+      return;
+    try {
+      const pulled = await pullRemoteFarm(data, farmId);
+      await persist(pulled);
+      await refreshRemoteWorkspace(farmId);
+      setNotice(`Finca compartida ${remote.name} cargada. Rol actual: ${remote.role}.`);
+    } catch (error) {
+      setNotice(`No se pudo abrir la finca compartida: ${error instanceof Error ? error.message : 'Error desconocido.'}`);
+    }
+  };
+  const acceptInvitation = async (invitationId: string) => {
+    try {
+      const farmId = await acceptRemoteInvitation(invitationId);
+      await refreshRemoteWorkspace(farmId);
+      setNotice('Invitación aceptada. Ya puedes abrir la finca compartida.');
+    } catch (error) {
+      setNotice(`No se pudo aceptar la invitación: ${error instanceof Error ? error.message : 'Error desconocido.'}`);
+    }
+  };
+  const inviteMember = async (form: HTMLFormElement) => {
+    if (!data.settings.remoteFarmId) return;
+    const values = new FormData(form);
+    try {
+      await inviteRemoteMember(
+        data.settings.remoteFarmId,
+        formValue(values, 'memberEmail'),
+        formValue(values, 'memberRole') as Exclude<FarmRole, 'owner'>,
+      );
+      form.reset();
+      setNotice('Invitación creada. La persona debe iniciar sesión con ese correo y aceptarla en RB SmartFarm.');
+    } catch (error) {
+      setNotice(`No se pudo crear la invitación: ${error instanceof Error ? error.message : 'Error desconocido.'}`);
+    }
+  };
+  const changeMemberRole = async (
+    userId: string,
+    role: Exclude<FarmRole, 'owner'>,
+  ) => {
+    if (!data.settings.remoteFarmId) return;
+    try {
+      await updateRemoteMemberRole(data.settings.remoteFarmId, userId, role);
+      await refreshRemoteWorkspace();
+      setNotice('Permiso del usuario actualizado.');
+    } catch (error) {
+      setNotice(`No se pudo actualizar el permiso: ${error instanceof Error ? error.message : 'Error desconocido.'}`);
+    }
+  };
+  const removeMember = async (userId: string) => {
+    if (!data.settings.remoteFarmId || !confirm('¿Retirar este usuario de la finca compartida?')) return;
+    try {
+      await removeRemoteMember(data.settings.remoteFarmId, userId);
+      await refreshRemoteWorkspace();
+      setNotice('Usuario retirado de la finca compartida.');
+    } catch (error) {
+      setNotice(`No se pudo retirar el usuario: ${error instanceof Error ? error.message : 'Error desconocido.'}`);
+    }
+  };
+  const syncRemote = async () => {
+    if (
+      !confirm(
+        'Se compararán los datos locales con la finca remota seleccionada. Los cambios compatibles se enviarán y luego se descargará la versión remota. Ante un conflicto, se conserva la versión remota y se te avisará. ¿Deseas continuar?',
+      )
+    )
+      return;
+    try {
+      const result = await syncFarmData(data);
+      await persist(result.data);
+      const completionMessage =
+        result.conflicts
+          ? `Sincronización terminada: ${result.records} registros y ${result.audits} auditorías procesados. ${result.conflicts} conflicto(s): se conservó la versión remota y fue descargada.`
+          : `Sincronización terminada: ${result.records} registros y ${result.audits} entradas de auditoría procesados y actualizados.`;
+      // La escritura y descarga ya fueron exitosas. El aviso debe mostrarse
+      // incluso si la actualización auxiliar de la lista compartida falla.
+      setNotice(completionMessage);
+      try {
+        await refreshRemoteWorkspace(result.farmId);
+      } catch {
+        setNotice(
+          `${completionMessage} La lista de usuarios se actualizará al recargar la página.`,
+        );
+      }
+    } catch (error) {
+      setNotice(
+        `No se pudo sincronizar: ${error instanceof Error ? error.message : 'Error desconocido.'}`,
+      );
+    }
   };
   const activeAnimals = data.animals.filter((item) => !item.deletedAt);
   const reviewCycles = cycles.filter(
@@ -896,7 +1250,9 @@ export default function Home() {
             <h1>{view}</h1>
           </div>
           <div className="top-actions">
-            <span className="sync-state">● Sin conexión</span>
+            <span className="sync-state">
+              {remoteUserEmail ? '● Sesión remota activa' : '● Datos locales'}
+            </span>
             <button
               className="primary"
               onClick={() => setView(view === 'Eventos' ? 'Partos' : 'Eventos')}
@@ -993,10 +1349,28 @@ export default function Home() {
             {view === 'Configuración' && (
               <Configuration
                 settings={data.settings}
+                backupStatus={backupStatusFor(data.settings)}
+                remoteConfigured={isSupabaseConfigured}
+                remoteUserEmail={remoteUserEmail}
+                remotePasswordRecovery={remotePasswordRecovery}
+                remoteFarms={remoteFarms}
+                remoteInvitations={remoteInvitations}
+                remoteMembers={remoteMembers}
                 onSave={saveSettings}
                 onSaveRemovalCode={saveRemovalCode}
                 onExportBackup={exportBackup}
                 onRestoreBackup={restoreBackup}
+                onSignInRemote={signInRemote}
+                onSignUpRemote={signUpRemote}
+                onRequestRemotePasswordReset={requestRemotePasswordReset}
+                onUpdateRemotePassword={updateRemotePassword}
+                onSignOutRemote={signOutRemote}
+                onSyncRemote={syncRemote}
+                onSelectRemoteFarm={selectRemoteFarm}
+                onAcceptInvitation={acceptInvitation}
+                onInviteMember={inviteMember}
+                onChangeMemberRole={changeMemberRole}
+                onRemoveMember={removeMember}
               />
             )}
           </div>
@@ -3010,17 +3384,57 @@ function Audit({
 }
 function Configuration({
   settings,
+  backupStatus,
+  remoteConfigured,
+  remoteUserEmail,
+  remotePasswordRecovery,
+  remoteFarms,
+  remoteInvitations,
+  remoteMembers,
   onSave,
   onSaveRemovalCode,
   onExportBackup,
   onRestoreBackup,
+  onSignInRemote,
+  onSignUpRemote,
+  onRequestRemotePasswordReset,
+  onUpdateRemotePassword,
+  onSignOutRemote,
+  onSyncRemote,
+  onSelectRemoteFarm,
+  onAcceptInvitation,
+  onInviteMember,
+  onChangeMemberRole,
+  onRemoveMember,
 }: {
   settings: Settings;
+  backupStatus: ReturnType<typeof backupStatusFor>;
+  remoteConfigured: boolean;
+  remoteUserEmail?: string;
+  remotePasswordRecovery: boolean;
+  remoteFarms: RemoteFarm[];
+  remoteInvitations: RemoteInvitation[];
+  remoteMembers: RemoteMember[];
   onSave: (form: HTMLFormElement) => void;
   onSaveRemovalCode: (form: HTMLFormElement) => void;
-  onExportBackup: () => void;
+  onExportBackup: () => Promise<void>;
   onRestoreBackup: (file: File) => void;
+  onSignInRemote: (form: HTMLFormElement) => Promise<void>;
+  onSignUpRemote: (form: HTMLFormElement) => Promise<void>;
+  onRequestRemotePasswordReset: (form: HTMLFormElement) => Promise<void>;
+  onUpdateRemotePassword: (form: HTMLFormElement) => Promise<void>;
+  onSignOutRemote: () => Promise<void>;
+  onSyncRemote: () => Promise<void>;
+  onSelectRemoteFarm: (farmId: string) => Promise<void>;
+  onAcceptInvitation: (invitationId: string) => Promise<void>;
+  onInviteMember: (form: HTMLFormElement) => Promise<void>;
+  onChangeMemberRole: (
+    userId: string,
+    role: Exclude<FarmRole, 'owner'>,
+  ) => Promise<void>;
+  onRemoveMember: (userId: string) => Promise<void>;
 }) {
+  const [showRemotePasswordChange, setShowRemotePasswordChange] = useState(false);
   const labels: Record<(typeof numericSettingKeys)[number], string> = {
     bovineGestationDays: 'Gestación bovina (días)',
     buffaloGestationDays: 'Gestación bufalina (días)',
@@ -3029,6 +3443,9 @@ function Configuration({
     earlyBirthToleranceDays: 'Tolerancia parto anticipado (días)',
     minimumBreedingAgeMonths: 'Edad mínima para reproducción (meses)',
   };
+  const selectedRemoteFarm = remoteFarms.find(
+    (farm) => farm.id === settings.remoteFarmId,
+  );
   return (
     <>
       <section className="section-head">
@@ -3039,6 +3456,7 @@ function Configuration({
         </div>
       </section>
       <form
+        key={`${settings.remoteFarmId ?? 'local'}:${settings.farmName}`}
         className="settings-form panel"
         onSubmit={(e) => {
           e.preventDefault();
@@ -3074,14 +3492,31 @@ function Configuration({
           <p className="eyebrow">Respaldo local</p>
           <h3>Protege los datos de la finca</h3>
           <p>
-            Descarga una copia completa antes de cambiar de computador o hacer
-            cambios importantes. La restauración reemplaza los datos actuales
-            únicamente después de su confirmación.
+            Descarga una copia al finalizar cada jornada con cambios y siempre
+            antes de actualizar, limpiar el navegador o cambiar de computador.
+            La restauración reemplaza los datos actuales únicamente después de
+            su confirmación.
           </p>
+          <p
+            className={`backup-status ${backupStatus.due ? 'is-due' : 'is-current'}`}
+            role="status"
+          >
+            <strong>{backupStatus.label}.</strong> {backupStatus.detail}
+          </p>
+          <ul className="backup-checklist">
+            <li>Guarda el archivo fuera de la carpeta Descargas.</li>
+            <li>Conserva una segunda copia en la ubicación remota aprobada.</li>
+            <li>El primer lunes de cada mes, prueba una restauración en otro perfil.</li>
+          </ul>
+          {settings.lastBackupRestoredAt && (
+            <p className="backup-restore-date">
+              Última restauración registrada en este equipo: {date(settings.lastBackupRestoredAt)}.
+            </p>
+          )}
         </div>
         <div className="backup-actions">
           <button className="primary" type="button" onClick={onExportBackup}>
-            Descargar respaldo
+            Descargar respaldo de hoy
           </button>
           <label className="quiet backup-restore">
             Restaurar respaldo
@@ -3143,13 +3578,150 @@ function Configuration({
           </button>
         </form>
       </section>
-      <section className="panel integration-note">
-        <h3>Integraciones futuras</h3>
-        <p>
-          Esta versión no realiza conexiones externas. Si se integra Google
-          Drive, Sheets o Gmail, se hará únicamente por Composio y con la cuenta
-          autorizada.
-        </p>
+      <section className="panel remote-sync-panel">
+        <h3>Sincronización remota</h3>
+        {!remoteConfigured ? (
+          <p>Falta la configuración local para enlazar este dispositivo al piloto remoto.</p>
+        ) : remotePasswordRecovery ? (
+          <form className="remote-password-reset" onSubmit={(event) => { event.preventDefault(); void onUpdateRemotePassword(event.currentTarget); }}>
+            <p>El enlace fue validado. Define una contraseña para tu cuenta piloto.</p>
+            <Input label="Nueva contraseña" name="remotePassword" type="password" minLength={8} autoComplete="new-password" required />
+            <Input label="Confirmar nueva contraseña" name="remotePasswordConfirmation" type="password" minLength={8} autoComplete="new-password" required />
+            <button className="primary" type="submit">Guardar nueva contraseña</button>
+          </form>
+        ) : remoteUserEmail ? (
+          <>
+            <p>
+              Sesión piloto: <strong>{remoteUserEmail}</strong>. Los respaldos locales siguen siendo obligatorios.
+            </p>
+            <div className="backup-actions">
+              <button className="primary" type="button" onClick={onSyncRemote}>
+                Sincronizar y actualizar
+              </button>
+              <button className="quiet" type="button" onClick={() => setShowRemotePasswordChange((visible) => !visible)}>
+                {showRemotePasswordChange ? 'Cancelar cambio de contraseña' : 'Cambiar contraseña'}
+              </button>
+              <button className="quiet" type="button" onClick={onSignOutRemote}>
+                Cerrar sesión remota
+              </button>
+            </div>
+            <div className="shared-farm-panel">
+              <div>
+                <p className="eyebrow">Fincas compartidas</p>
+                <h4>Selecciona la finca de trabajo</h4>
+                <p>
+                  Al abrir una finca se descarga su información. Antes de cambiar
+                  de finca, sincroniza o respalda el trabajo local pendiente.
+                </p>
+              </div>
+              {remoteFarms.length ? (
+                <div className="shared-farm-list">
+                  {remoteFarms.map((farm) => (
+                    <button
+                      className={farm.id === settings.remoteFarmId ? 'shared-farm active' : 'shared-farm'}
+                      type="button"
+                      key={farm.id}
+                      onClick={() => void onSelectRemoteFarm(farm.id)}
+                    >
+                      <span>{farm.name}</span>
+                      <small>{farm.role === 'owner' ? 'Propietario' : farm.role}</small>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="backup-restore-date">Aún no tienes fincas remotas. Sincroniza la finca local para crear la primera.</p>
+              )}
+              {remoteInvitations.length > 0 && (
+                <div className="invitation-list">
+                  <h4>Invitaciones recibidas</h4>
+                  {remoteInvitations.map((invitation) => (
+                    <div className="invitation-row" key={invitation.invitation_id}>
+                      <span>{invitation.farm_name} · {invitation.role}</span>
+                      <button className="quiet" type="button" onClick={() => void onAcceptInvitation(invitation.invitation_id)}>
+                        Aceptar invitación
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {selectedRemoteFarm?.role === 'owner' && (
+                <div className="member-management">
+                  <h4>Usuarios de {selectedRemoteFarm.name}</h4>
+                  <form className="member-invite" onSubmit={(event) => { event.preventDefault(); void onInviteMember(event.currentTarget); }}>
+                    <Input label="Correo del usuario" name="memberEmail" type="email" required />
+                    <label>Rol
+                      <select name="memberRole" defaultValue="operator">
+                        <option value="manager">Administrador</option>
+                        <option value="operator">Operador</option>
+                        <option value="viewer">Solo lectura</option>
+                      </select>
+                    </label>
+                    <button className="quiet" type="submit">Crear invitación</button>
+                  </form>
+                  <div className="member-list">
+                    {remoteMembers.map((member) => (
+                      <div className="member-row" key={member.user_id}>
+                        <span>{member.email}</span>
+                        {member.role === 'owner' ? (
+                          <strong>Propietario</strong>
+                        ) : (
+                          <>
+                            <select value={member.role} onChange={(event) => void onChangeMemberRole(member.user_id, event.currentTarget.value as Exclude<FarmRole, 'owner'>)}>
+                              <option value="manager">Administrador</option>
+                              <option value="operator">Operador</option>
+                              <option value="viewer">Solo lectura</option>
+                            </select>
+                            <button className="quiet danger-action" type="button" onClick={() => void onRemoveMember(member.user_id)}>Retirar</button>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {showRemotePasswordChange && (
+              <form className="remote-password-reset" onSubmit={(event) => { event.preventDefault(); void onUpdateRemotePassword(event.currentTarget); }}>
+                <p>La sesión piloto está activa. Define una contraseña nueva para futuros ingresos.</p>
+                <Input label="Nueva contraseña" name="remotePassword" type="password" minLength={8} autoComplete="new-password" required />
+                <Input label="Confirmar nueva contraseña" name="remotePasswordConfirmation" type="password" minLength={8} autoComplete="new-password" required />
+                <button className="primary" type="submit">Guardar nueva contraseña</button>
+              </form>
+            )}
+            {settings.remoteLastSyncedAt && (
+              <p className="backup-restore-date">
+                Última sincronización: {date(settings.remoteLastSyncedAt)}.
+              </p>
+            )}
+            {settings.remoteLastPulledAt && (
+              <p className="backup-restore-date">
+                Última actualización descargada: {date(settings.remoteLastPulledAt)}. Los conflictos conservan la versión remota.
+              </p>
+            )}
+          </>
+        ) : (
+          <div className="remote-auth-grid">
+            <form onSubmit={(event) => { event.preventDefault(); void onSignInRemote(event.currentTarget); }}>
+              <h4>Ingresar al piloto</h4>
+              <Input label="Correo" name="remoteEmail" type="email" autoComplete="email" required />
+              <Input label="Contraseña" name="remotePassword" type="password" autoComplete="current-password" required />
+              <button className="primary" type="submit">Iniciar sesión</button>
+            </form>
+            <form onSubmit={(event) => { event.preventDefault(); void onSignUpRemote(event.currentTarget); }}>
+              <h4>Crear cuenta piloto</h4>
+              <Input label="Correo" name="remoteEmail" type="email" autoComplete="email" required />
+              <Input label="Contraseña" name="remotePassword" type="password" minLength={8} autoComplete="new-password" required />
+              <p>La contraseña la defines tú; por seguridad no se guarda ni se puede mostrar después.</p>
+              <button className="quiet" type="submit">Enviar registro</button>
+            </form>
+            <form onSubmit={(event) => { event.preventDefault(); void onRequestRemotePasswordReset(event.currentTarget); }}>
+              <h4>¿No recuerda la contraseña?</h4>
+              <p>Enviaremos un enlace seguro para definir una nueva.</p>
+              <Input label="Correo de la cuenta piloto" name="remoteEmail" type="email" autoComplete="email" required />
+              <button className="quiet" type="submit">Enviar enlace de recuperación</button>
+            </form>
+          </div>
+        )}
       </section>
     </>
   );

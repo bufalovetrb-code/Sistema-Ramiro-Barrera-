@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { restoreDataFrom } from '../app/page';
+import { backupFileName, backupStatusFor, restoreDataFrom } from '../app/page';
+import { defaultSettings } from '../lib/domain';
 
 const base = {
   animals: [
@@ -43,5 +44,26 @@ describe('respaldo local', () => {
         events: [{ animalId: 'animal-inexistente' }],
       }),
     ).toBeUndefined();
+  });
+  it('identifica si el respaldo del día está pendiente y nombra el archivo por finca', () => {
+    expect(
+      backupStatusFor(
+        {
+          ...defaultSettings,
+          ...base.settings,
+          lastBackupDownloadedAt: '2026-10-01T12:00:00.000Z',
+        },
+        new Date('2026-10-01T15:00:00.000Z'),
+      ).due,
+    ).toBe(false);
+    expect(
+      backupStatusFor(
+        { ...defaultSettings, ...base.settings },
+        new Date('2026-10-01T15:00:00.000Z'),
+      ).due,
+    ).toBe(true);
+    expect(backupFileName('La Sibería', '2026-10-01T12:00:00.000Z')).toBe(
+      'rb-smartfarm-respaldo-2026-10-01-la-siberia.json',
+    );
   });
 });
